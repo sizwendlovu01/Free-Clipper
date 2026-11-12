@@ -9,4 +9,4 @@ anthropic==2.8.0
 httpx==0.28.1
 numpy==2.5.4
 # 4.x still ships the Haar face cascades used for reframing (removed in 5.x)
-opencv-python-headless==4.14.0
+opencv-python-headless==4.14.0.94

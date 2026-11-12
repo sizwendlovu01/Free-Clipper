@@ -1,6 +1,7 @@
 """FastAPI web app: pages + JSON API."""
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import re
@@ -253,7 +254,7 @@ def login_page(request: Request):
 def setup_page(request: Request):
     if db.one("SELECT id FROM users LIMIT 1"):
         return RedirectResponse("/login", 303)
-    return page(request, "setup.html", None)
+    return page(request, "setup.html", None, needs_token=bool(config.SETUP_TOKEN))
 
 
 @app.post("/logout")
@@ -269,6 +270,8 @@ async def api_setup(request: Request):
     body = await request.json()
     if db.one("SELECT id FROM users LIMIT 1"):
         raise HTTPException(400, "Setup is already complete.")
+    if config.SETUP_TOKEN and not hmac.compare_digest(str(body.get("setup_token", "")), config.SETUP_TOKEN):
+        raise HTTPException(403, "Wrong setup code (FC_SETUP_TOKEN).")
     try:
         uid = auth.create_user(body.get("username", ""), body.get("password", ""), is_admin=True)
     except ValueError as e:
@@ -378,6 +381,15 @@ def api_system(user: dict = Depends(require_user)):
         "whisper_default": config.WHISPER_MODEL, "whisper_models": config.WHISPER_MODELS,
         "fonts": sorted(p.name for p in config.FONTS_DIR.iterdir() if p.suffix.lower() in (".ttf", ".otf")),
     }
+
+
+@app.get("/healthz")
+def healthz():
+    """Liveness check for hosting platforms: database reachable and ffmpeg installed."""
+    db.one("SELECT 1 AS ok")
+    if not shutil.which(config.FFMPEG):
+        return JSONResponse({"ok": False, "detail": "ffmpeg not found"}, status_code=503)
+    return {"ok": True}
 
 
 @app.get("/api/branding")

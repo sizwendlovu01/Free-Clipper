@@ -7,6 +7,7 @@
   <form id="f">
     <div class="field"><label for="u">Username</label><input id="u" type="text" autocomplete="username" required autofocus></div>
     <div class="field"><label for="p">Password (8+ characters)</label><input id="p" type="password" autocomplete="new-password" minlength="8" required></div>
+    {% if needs_token %}<div class="field"><label for="tk">Setup code (FC_SETUP_TOKEN)</label><input id="tk" type="password" autocomplete="off" required></div>{% endif %}
     <button class="primary" type="submit">Create admin account</button>
   </form>
 </div>
@@ -15,7 +16,8 @@
 <script>
 f.addEventListener("submit", async e => {
   e.preventDefault();
-  try { await api("/api/setup", { method: "POST", body: { username: u.value, password: p.value } }); location.href = "/"; }
+  const tk = document.getElementById("tk");
+  try { await api("/api/setup", { method: "POST", body: { username: u.value, password: p.value, setup_token: tk ? tk.value : "" } }); location.href = "/"; }
   catch (err) { toast(err.message, true); }
 });
 </script>

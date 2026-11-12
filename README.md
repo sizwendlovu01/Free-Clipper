@@ -53,6 +53,27 @@ docker compose up -d --build
 
 Data is stored in `./data`. For a fully local AI highlight finder: `docker compose --profile ollama up -d`, pull a model, and set `FC_AI_PROVIDER=ollama`, `FC_OLLAMA_URL=http://ollama:11434` in `.env`.
 
+## Deploy to a cloud host
+
+ClipForge AI runs as one Docker container that needs a long-running process, ffmpeg and a persistent disk. Any container host works (Render, Railway, Fly.io, a VPS with Docker). The container:
+- listens on `$PORT` if the platform sets it (otherwise 8000);
+- answers health checks at `/healthz` (checks the database and ffmpeg);
+- keeps videos, clips, models and the database in `/data`, so **mount a persistent volume at `/data`**, or everything is lost on each redeploy.
+
+Example: Render (dashboard)
+1. New, then Web Service, then connect this GitHub repo. Render detects the `Dockerfile`.
+2. Instance: at least 2 GB RAM for transcription (persistent disks need a paid instance on Render).
+3. Advanced: add a Disk with mount path `/data` (10 GB or more).
+4. Health check path: `/healthz`.
+5. Environment variables: `PORT=8000`, `FC_HTTPS_ONLY_COOKIES=true`, and optionally `ANTHROPIC_API_KEY` (Claude highlight picking; without it the built-in finder is used, since Ollama is not available on most hosts). Set `FC_SECRET_KEY` to a long random string so sign-ins survive restarts, and `FC_SETUP_TOKEN` to a code only you know.
+6. Deploy, open the URL and create the admin account, entering your setup code. Without `FC_SETUP_TOKEN`, whoever opens a fresh deployment first could claim the admin account.
+
+Hosts without GPUs transcribe uploads slowly (see Speed and capacity); YouTube links stay fast because they use platform captions.
+
+### Why not Vercel?
+
+Vercel runs short serverless functions: request bodies are capped at 4.5 MB (video uploads cannot pass), each request ends after a few minutes with no background work afterwards, there is no ffmpeg and no persistent disk. The processing pipeline cannot run there. Use a container host as above.
+
 ## Speed and capacity
 
 How a job runs, fastest path first:

@@ -73,6 +73,8 @@ HOST = os.getenv("FC_HOST", "127.0.0.1")
 PORT = _int("PORT", _int("FC_PORT", 8000))
 HTTPS_ONLY_COOKIES = _bool("FC_HTTPS_ONLY_COOKIES", False)
 ALLOW_SIGNUP = _bool("FC_ALLOW_SIGNUP", False)
+# When set, creating the first (admin) account requires this code: protects a fresh public deployment.
+SETUP_TOKEN = os.getenv("FC_SETUP_TOKEN", "")
 MAX_UPLOAD_MB = _int("FC_MAX_UPLOAD_MB", 8192)
 
 # How many videos are processed at the same time. Everything else waits in the queue.
