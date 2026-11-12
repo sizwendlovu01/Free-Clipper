@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Sign in - {{ brand.app_name }}{% endblock %}
+{% block content %}
+<div class="auth card">
+  <div class="row" style="margin-bottom:16px">
+    {% if brand.has_logo %}<img src="/branding/logo.png" alt="" style="height:32px">{% endif %}
+    <h1 style="margin:0">{{ brand.app_name }}</h1>
+  </div>
+  <form id="f">
+    <div class="field"><label for="u">Username</label><input id="u" type="text" autocomplete="username" required autofocus></div>
+    <div class="field"><label for="p">Password</label><input id="p" type="password" autocomplete="current-password" required></div>
+    <div class="row">
+      <button class="primary" type="submit">Sign in</button>
+      {% if allow_signup %}<button type="button" id="signup">Create account</button>{% endif %}
+    </div>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const creds = () => ({ username: u.value, password: p.value });
+f.addEventListener("submit", async e => {
+  e.preventDefault();
+  try { await api("/api/login", { method: "POST", body: creds() }); location.href = "/"; }
+  catch (err) { toast(err.message, true); }
+});
+const su = document.getElementById("signup");
+if (su) su.addEventListener("click", async () => {
+  try { await api("/api/signup", { method: "POST", body: creds() }); location.href = "/"; }
+  catch (err) { toast(err.message, true); }
+});
+</script>
+{% endblock %}

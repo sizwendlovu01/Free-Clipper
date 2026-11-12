@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ brand.app_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>:root { --accent: {{ brand.accent }}; }</style>
+  {% if brand.has_logo %}<link rel="icon" href="/branding/logo.png">{% endif %}
+  <script src="/static/app.js"></script>
+</head>
+<body>
+{% if user %}
+<header class="top">
+  <a class="brand" href="/">
+    {% if brand.has_logo %}<img src="/branding/logo.png" alt="">{% else %}<span class="dot"></span>{% endif %}
+    {{ brand.app_name }}
+  </a>
+  <nav>
+    {% set path = request.url.path %}
+    <a href="/" class="{{ 'active' if path == '/' or path.startswith('/jobs') }}">Projects</a>
+    <a href="/clips" class="{{ 'active' if path == '/clips' }}">All clips</a>
+    <a href="/templates" class="{{ 'active' if path == '/templates' }}">Caption styles</a>
+    <a href="/settings" class="{{ 'active' if path == '/settings' }}">Settings</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="muted small">{{ user.username }}</span>
+  <form method="post" action="/logout"><button class="sm" type="submit">Sign out</button></form>
+</header>
+{% endif %}
+<main>
+{% block content %}{% endblock %}
+</main>
+{% block scripts %}{% endblock %}
+</body>
+</html>

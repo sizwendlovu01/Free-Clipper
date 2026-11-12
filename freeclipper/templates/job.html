@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="row" style="align-items:flex-start">
+    <div style="min-width:0;flex:1">
+      <h1 id="title" style="word-break:break-word">Loading...</h1>
+      <div class="row small muted" id="meta"></div>
+    </div>
+    <div class="row" id="actions"></div>
+  </div>
+  <div id="status" style="margin-top:14px"></div>
+</div>
+
+<div class="row" style="margin-bottom:12px">
+  <h2 style="margin:0">Clips</h2><span class="spacer"></span>
+  <span class="small muted">Best first, by AI virality score</span>
+</div>
+<div class="grid clips" id="clips"></div>
+
+<div class="grid two" style="margin-top:20px">
+  <div class="card">
+    <h2>Transcript</h2>
+    <p class="small muted">Click a line to use it for a custom clip.</p>
+    <div class="transcript" id="transcript"><span class="muted">Not ready yet.</span></div>
+    <div class="row small" style="margin-top:10px" id="tdl"></div>
+  </div>
+  <div class="card">
+    <h2>Add your own clip</h2>
+    <div class="fields">
+      <div><label for="cs">Start (m:ss)</label><input id="cs" type="text" placeholder="1:05"></div>
+      <div><label for="ce">End (m:ss)</label><input id="ce" type="text" placeholder="1:45"></div>
+    </div>
+    <div class="field" style="margin-top:12px"><label for="ct">Title</label><input id="ct" type="text" maxlength="120" placeholder="Custom clip"></div>
+    <button class="primary" id="addclip">Add and render</button>
+    <hr style="border:none;border-top:1px solid var(--line);margin:20px 0">
+    <h2>Find clips again</h2>
+    <p class="small muted">Re-runs highlight detection with new settings. The transcript is reused, so this is quick. Existing clips are replaced.</p>
+    <div class="fields">
+      <div><label for="rn">Number of clips</label><input id="rn" type="number" min="1" max="30"></div>
+      <div><label for="rmin">Min length (s)</label><input id="rmin" type="number" min="5" max="180"></div>
+      <div><label for="rmax">Max length (s)</label><input id="rmax" type="number" min="10" max="300"></div>
+      <div><label for="raspect">Format</label><select id="raspect">
+        <option value="9:16">9:16</option><option value="1:1">1:1</option><option value="4:5">4:5</option>
+        <option value="16:9">16:9</option><option value="original">Original</option></select></div>
+      <div><label for="rreframe">Reframing</label><select id="rreframe">
+        <option value="auto">Follow faces</option><option value="center">Center crop</option>
+        <option value="fit_blur">Blurred background</option><option value="fit_black">Black bars</option></select></div>
+      <div><label for="rtpl">Caption style</label><select id="rtpl"></select></div>
+    </div>
+    <div class="field" style="margin-top:12px"><label for="rprompt">Instructions for the AI</label><input id="rprompt" type="text" maxlength="1000"></div>
+    <button id="reanalyze">Find clips again</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const JOB = "{{ job_id }}";
+let job = null, templates = [], transcriptLoaded = false, timer = null;
+const ASPECT_CSS = { "9:16": "9/16", "1:1": "1/1", "4:5": "4/5", "16:9": "16/9", "original": "16/9" };
+
+async function load() {
+  clearTimeout(timer);
+  try { job = await api(`/api/jobs/${JOB}`); }
+  catch (e) {
+    if (e instanceof TypeError) { timer = setTimeout(load, 5000); return; }  // network blip: retry
+    toast(e.message, true); return;
+  }
+  render();
+  const busy = ["queued", "running"].includes(job.status) || job.clips.some(c => ["queued", "rendering", "pending"].includes(c.status));
+  if (busy) timer = setTimeout(load, 2500);
+  if (!transcriptLoaded && ["done", "failed"].includes(job.status)) loadTranscript();
+}
+
+function render() {
+  document.getElementById("title").textContent = job.title;
+  document.title = job.title;
+  const o = job.options;
+  document.getElementById("meta").innerHTML = [badge(job.status), job.duration ? fmtTime(job.duration) : "",
+    job.language ? `Language: ${esc(job.language)}` : "", `${o.aspect} · ${o.reframe}`,
+    job.source_type === "url" ? `<a href="${esc(job.source)}" target="_blank" rel="noopener">source</a>` : esc(job.source)]
+    .filter(Boolean).join(" · ");
+  const busy = ["queued", "running"].includes(job.status);
+  document.getElementById("actions").innerHTML = `
+    ${busy ? '<button class="danger" onclick="cancelJob()">Cancel</button>' : ""}
+    ${job.clips_done ? `<a class="btn primary" href="/api/jobs/${JOB}/export.zip">Download all (.zip)</a>` : ""}
+    ${["failed", "cancelled"].includes(job.status) ? '<button onclick="retry()">Retry</button>' : ""}
+    ${job.status !== "running" ? '<button class="danger" onclick="delJob()">Delete</button>' : ""}`;
+  let status = "";
+  if (busy) status = `<div class="small" style="margin-bottom:6px">${esc(job.stage)} · ${(job.progress * 100).toFixed(0)}%</div>
+    <div class="progress"><div style="width:${(job.progress * 100).toFixed(1)}%"></div></div>`;
+  else if (job.status === "done") status = `<div class="small muted">${esc(job.stage)}</div>`;
+  if (job.error) status += `<pre class="small" style="color:var(--danger);white-space:pre-wrap;margin:10px 0 0">${esc(job.error)}</pre>`;
+  if (job.notes) status += `<div class="small" style="color:var(--warn);margin-top:8px">${esc(job.notes)}</div>`;
+  document.getElementById("status").innerHTML = status;
+
+  for (const [id, key] of [["rn", "max_clips"], ["rmin", "min_len"], ["rmax", "max_len"], ["raspect", "aspect"], ["rreframe", "reframe"], ["rprompt", "prompt"]]) {
+    const el = document.getElementById(id);
+    if (document.activeElement !== el && !el.dataset.touched) el.value = o[key] ?? "";
+  }
+  const ratio = ASPECT_CSS[o.aspect] || "9/16";
+  const el = document.getElementById("clips");
+  if (!job.clips.length) {
+    el.innerHTML = `<p class="muted">${busy ? "Clips appear here as they are made." : "No clips."}</p>`;
+    return;
+  }
+  // Keep playing videos alive: only rebuild cards whose content changed.
+  const existing = new Map([...el.children].map(c => [c.dataset.key, c]));
+  const frag = [];
+  for (const c of job.clips) {
+    const key = `${c.id}:${c.status}:${c.updated_at}:${c.title}`;
+    let card = existing.get(key);
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "card clip";
+      card.style.margin = "0";
+      card.dataset.key = key;
+      card.innerHTML = clipCard(c, ratio);
+    }
+    frag.push(card);
+  }
+  el.replaceChildren(...frag);
+}
+
+function clipCard(c, ratio) {
+  const media = c.status === "done"
+    ? `<video controls preload="metadata" playsinline poster="${c.files.thumb}" src="${c.files.video}" style="aspect-ratio:${ratio}">
+         <track kind="captions" src="${c.files.vtt}" label="Captions"></video>`
+    : `<div class="ph" style="aspect-ratio:${ratio}">${c.status === "failed" ? "Render failed" : "Rendering..."}</div>`;
+  return `${media}
+    <div class="body">
+      <div class="row" style="gap:6px"><span class="badge score">${c.score}</span>
+        <span class="small muted">${fmtTime(c.start)}-${fmtTime(c.end)} · ${c.duration.toFixed(0)}s</span>
+        ${c.status !== "done" ? badge(c.status) : ""}</div>
+      <div class="title">${esc(c.title)}</div>
+      ${c.hashtags.length ? `<div class="tags">${c.hashtags.map(esc).join(" ")}</div>` : ""}
+      ${c.reason || c.hook ? `<details><summary>Why this clip</summary>${c.hook ? `<p><b>Hook:</b> ${esc(c.hook)}</p>` : ""}${esc(c.reason)}</details>` : ""}
+      ${c.error ? `<details open><summary style="color:var(--danger)">Error</summary><pre style="white-space:pre-wrap">${esc(c.error)}</pre></details>` : ""}
+      <div class="actions">
+        ${c.status === "done" ? `<a class="btn sm primary" href="${c.files.video}&download=1">MP4</a>
+          <a class="btn sm" href="${c.files.srt}&download=1">SRT</a>
+          <a class="btn sm" href="${c.files.vtt}&download=1">VTT</a>` : ""}
+        <button class="sm" onclick="editClip('${c.id}')">Edit</button>
+        <button class="sm" onclick="copyCaption('${c.id}')">Copy post text</button>
+        <button class="sm danger" onclick="delClip('${c.id}')">Delete</button>
+      </div>
+    </div>`;
+}
+
+const clipById = id => job.clips.find(c => c.id === id);
+function copyCaption(id) { const c = clipById(id); copyText(`${c.title}\n\n${c.hashtags.join(" ")}`.trim()); }
+
+function editClip(id) {
+  const c = clipById(id);
+  const m = modal(`<h2>Edit clip</h2>
+    <div class="field"><label>Title</label><input id="et" type="text" maxlength="120" value="${esc(c.title)}"></div>
+    <div class="fields"><div><label>Start (m:ss.s)</label><input id="es" type="text" value="${fmtPrecise(c.start)}"></div>
+      <div><label>End (m:ss.s)</label><input id="ee" type="text" value="${fmtPrecise(c.end)}"></div></div>
+    <div class="field" style="margin-top:12px"><label>Caption style</label><select id="etpl">
+      <option value="">Project default</option>${templates.map(t => `<option value="${t.id}" ${t.id === c.template_id ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div>
+    <div class="field"><label>Hashtags (space separated)</label><input id="eh" type="text" value="${esc(c.hashtags.join(" "))}"></div>
+    <div class="row"><button class="primary" id="esave">Save</button><button id="erender">Save and re-render</button><button id="ecancel">Close</button></div>
+    <p class="small muted">Changing the times or style re-renders the clip.</p>`);
+  const save = async (rerender) => {
+    const body = { title: m.querySelector("#et").value, start: parseTime(m.querySelector("#es").value),
+      end: parseTime(m.querySelector("#ee").value), template_id: m.querySelector("#etpl").value || null,
+      hashtags: m.querySelector("#eh").value.split(/\s+/).filter(Boolean), rerender };
+    try { await api(`/api/clips/${id}`, { method: "PATCH", body }); m.remove(); load(); }
+    catch (e) { toast(e.message, true); }
+  };
+  m.querySelector("#esave").onclick = () => save(false);
+  m.querySelector("#erender").onclick = () => save(true);
+  m.querySelector("#ecancel").onclick = () => m.remove();
+}
+
+async function delClip(id) {
+  if (!confirm("Delete this clip?")) return;
+  try { await api(`/api/clips/${id}`, { method: "DELETE" }); load(); } catch (e) { toast(e.message, true); }
+}
+async function cancelJob() { await api(`/api/jobs/${JOB}/cancel`, { method: "POST" }); load(); }
+async function retry() { try { await api(`/api/jobs/${JOB}/reanalyze`, { method: "POST", body: {} }); load(); } catch (e) { toast(e.message, true); } }
+async function delJob() {
+  if (!confirm("Delete this project, its source video and all clips?")) return;
+  try { await api(`/api/jobs/${JOB}`, { method: "DELETE" }); location.href = "/"; } catch (e) { toast(e.message, true); }
+}
+
+async function loadTranscript() {
+  transcriptLoaded = true;
+  try {
+    const t = await api(`/api/jobs/${JOB}/transcript.json`);
+    const el = document.getElementById("transcript");
+    el.innerHTML = t.segments.length ? t.segments.map(s =>
+      `<div><span data-s="${s.start}" data-e="${s.end}"><span class="ts">${fmtTime(s.start)}</span>${esc(s.text)}</span></div>`).join("")
+      : '<span class="muted">No speech was detected.</span>';
+    el.querySelectorAll("[data-s]").forEach(sp => sp.addEventListener("click", () => {
+      const cs = document.getElementById("cs"), ce = document.getElementById("ce");
+      if (!cs.value || (cs.value && ce.value)) { cs.value = fmtTime(sp.dataset.s); ce.value = ""; }
+      else ce.value = fmtTime(Math.ceil(+sp.dataset.e));
+    }));
+    document.getElementById("tdl").innerHTML = "Download: " + ["srt", "vtt", "txt", "json"].map(f =>
+      `<a href="/api/jobs/${JOB}/transcript.${f}">${f.toUpperCase()}</a>`).join(" · ");
+  } catch { transcriptLoaded = false; }
+}
+
+document.getElementById("addclip").onclick = async () => {
+  const body = { start: parseTime(document.getElementById("cs").value), end: parseTime(document.getElementById("ce").value),
+    title: document.getElementById("ct").value || "Custom clip" };
+  try { await api(`/api/jobs/${JOB}/clips`, { method: "POST", body }); toast("Clip queued"); load(); }
+  catch (e) { toast(e.message, true); }
+};
+document.querySelectorAll("#rn,#rmin,#rmax,#raspect,#rreframe,#rprompt").forEach(el => el.addEventListener("input", () => el.dataset.touched = 1));
+document.getElementById("reanalyze").onclick = async () => {
+  if (job.clips.length && !confirm("This replaces the current clips. Continue?")) return;
+  const v = id => document.getElementById(id).value;
+  const options = { max_clips: +v("rn"), min_len: +v("rmin"), max_len: +v("rmax"), aspect: v("raspect"),
+    reframe: v("rreframe"), prompt: v("rprompt"), template_id: v("rtpl") };
+  try { await api(`/api/jobs/${JOB}/reanalyze`, { method: "POST", body: { options } }); load(); }
+  catch (e) { toast(e.message, true); }
+};
+
+(async () => {
+  templates = await api("/api/templates");
+  load().then(() => {
+    document.getElementById("rtpl").innerHTML = templates.map(t =>
+      `<option value="${t.id}" ${job && t.id === +job.options.template_id ? "selected" : ""}>${esc(t.name)}</option>`).join("");
+  });
+})();
+</script>
+{% endblock %}

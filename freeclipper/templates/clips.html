@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row" style="margin-bottom:16px">
+  <h1 style="margin:0">All clips</h1><span class="spacer"></span>
+  <input id="q" type="text" placeholder="Search titles and hashtags" style="max-width:280px">
+  <select id="sort" style="max-width:180px">
+    <option value="new">Newest first</option><option value="score">Highest score</option>
+  </select>
+</div>
+<div class="grid clips" id="clips"><p class="muted">Loading...</p></div>
+{% endblock %}
+{% block scripts %}
+<script>
+let all = [];
+function draw() {
+  const q = document.getElementById("q").value.toLowerCase();
+  let list = all.filter(c => !q || (c.title + " " + c.hashtags.join(" ") + " " + c.job_title).toLowerCase().includes(q));
+  if (document.getElementById("sort").value === "score") list = [...list].sort((a, b) => b.score - a.score);
+  document.getElementById("clips").innerHTML = list.length ? list.map(c => `
+    <div class="card clip" style="margin:0">
+      <video controls preload="none" playsinline poster="${c.files.thumb}" src="${c.files.video}"></video>
+      <div class="body">
+        <div class="row" style="gap:6px"><span class="badge score">${c.score}</span>
+          <span class="small muted">${c.duration.toFixed(0)}s</span></div>
+        <div class="title">${esc(c.title)}</div>
+        <a class="small" href="/jobs/${c.job_id}">${esc(c.job_title)}</a>
+        ${c.hashtags.length ? `<div class="tags">${c.hashtags.map(esc).join(" ")}</div>` : ""}
+        <div class="actions"><a class="btn sm primary" href="${c.files.video}&download=1">MP4</a>
+          <a class="btn sm" href="${c.files.srt}&download=1">SRT</a>
+          <a class="btn sm" href="${c.files.meta}&download=1">JSON</a></div>
+      </div>
+    </div>`).join("") : '<p class="muted">No clips yet.</p>';
+}
+document.getElementById("q").addEventListener("input", draw);
+document.getElementById("sort").addEventListener("change", draw);
+api("/api/clips").then(c => { all = c; draw(); }).catch(e => toast(e.message, true));
+</script>
+{% endblock %}

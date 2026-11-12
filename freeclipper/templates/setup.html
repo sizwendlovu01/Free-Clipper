@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Set up - {{ brand.app_name }}{% endblock %}
+{% block content %}
+<div class="auth card">
+  <h1>Welcome</h1>
+  <p class="muted">Create the admin account. You can add more users later in Settings.</p>
+  <form id="f">
+    <div class="field"><label for="u">Username</label><input id="u" type="text" autocomplete="username" required autofocus></div>
+    <div class="field"><label for="p">Password (8+ characters)</label><input id="p" type="password" autocomplete="new-password" minlength="8" required></div>
+    <button class="primary" type="submit">Create admin account</button>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+f.addEventListener("submit", async e => {
+  e.preventDefault();
+  try { await api("/api/setup", { method: "POST", body: { username: u.value, password: p.value } }); location.href = "/"; }
+  catch (err) { toast(err.message, true); }
+});
+</script>
+{% endblock %}

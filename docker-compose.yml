@@ -1,0 +1,28 @@
+services:
+  freeclipper:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FC_HOST: 0.0.0.0
+      FC_DATA_DIR: /data
+    restart: unless-stopped
+
+  # Optional fully-local AI for highlight picking. Start with:
+  #   docker compose --profile ollama up -d
+  #   docker compose exec ollama ollama pull qwen2.5:3b
+  # then set FC_AI_PROVIDER=ollama and FC_OLLAMA_URL=http://ollama:11434 in .env
+  ollama:
+    image: ollama/ollama
+    profiles: ["ollama"]
+    volumes:
+      - ollama:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama:

@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Settings</h1>
+<div class="grid two">
+  <div class="card">
+    <h2>Your account</h2>
+    <div class="field"><label for="cur">Current password</label><input id="cur" type="password" autocomplete="current-password"></div>
+    <div class="field"><label for="npw">New password</label><input id="npw" type="password" autocomplete="new-password" minlength="8"></div>
+    <button id="pw">Change password</button>
+    <hr style="border:none;border-top:1px solid var(--line);margin:20px 0">
+    <h3>API access</h3>
+    <p class="small muted">Use a token to script uploads and downloads. Send it as <code>Authorization: Bearer &lt;token&gt;</code>.
+      Interactive API docs: <a href="/api/docs">/api/docs</a>.</p>
+    <div class="row"><button id="tok">Create new token</button><button class="danger" id="revoke">Revoke token</button></div>
+    <p id="tokout" class="small" style="margin-top:10px"></p>
+  </div>
+
+  {% if user.is_admin %}
+  <div class="card">
+    <h2>Branding</h2>
+    <div class="fields">
+      <div><label for="app_name">App name</label><input id="app_name" type="text" maxlength="40"></div>
+      <div><label for="accent">Accent color</label><input id="accent" type="color"></div>
+    </div>
+    <div class="field" style="margin-top:14px">
+      <label>Logo (also used as clip watermark)</label>
+      <div class="row"><img id="logo" alt="" style="height:40px;display:none;background:#fff1;border-radius:6px;padding:4px">
+        <input id="logofile" type="file" accept="image/*"><button class="sm danger" id="logodel">Remove</button></div>
+    </div>
+    <h3>Watermark on clips</h3>
+    <div class="row" style="margin-bottom:10px"><label class="check"><input id="wm_enabled" type="checkbox"> Add logo to every rendered clip</label></div>
+    <div class="fields">
+      <div><label for="wm_position">Position</label><select id="wm_position">
+        <option value="top-left">Top left</option><option value="top-right">Top right</option>
+        <option value="bottom-left">Bottom left</option><option value="bottom-right">Bottom right</option></select></div>
+      <div><label for="wm_opacity">Opacity</label><input id="wm_opacity" type="number" min="0.05" max="1" step="0.05"></div>
+      <div><label for="wm_size">Width (fraction of video)</label><input id="wm_size" type="number" min="0.05" max="0.5" step="0.01"></div>
+    </div>
+    <button class="primary" id="savebrand" style="margin-top:14px">Save branding</button>
+    <hr style="border:none;border-top:1px solid var(--line);margin:20px 0">
+    <h3>Caption fonts</h3>
+    <p class="small muted">Upload .ttf or .otf files, then use the font's family name in a caption style.</p>
+    <div class="row"><input id="fontfile" type="file" accept=".ttf,.otf"></div>
+    <p class="small muted" id="fonts"></p>
+  </div>
+
+  <div class="card">
+    <h2>Users</h2>
+    <table><thead><tr><th>Username</th><th>Role</th><th></th></tr></thead><tbody id="users"></tbody></table>
+    <h3 style="margin-top:16px">Add user</h3>
+    <div class="fields">
+      <div><label for="nu">Username</label><input id="nu" type="text"></div>
+      <div><label for="np">Password</label><input id="np" type="password" autocomplete="new-password"></div>
+    </div>
+    <div class="row" style="margin-top:10px"><label class="check"><input id="na" type="checkbox"> Admin</label>
+      <button id="adduser">Add user</button></div>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>System</h2>
+    <div id="sys" class="small"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const $ = id => document.getElementById(id);
+$("pw").onclick = async () => {
+  try { await api("/api/me/password", { method: "POST", body: { current: $("cur").value, new: $("npw").value } });
+    toast("Password changed"); $("cur").value = $("npw").value = ""; } catch (e) { toast(e.message, true); }
+};
+$("tok").onclick = async () => {
+  const { token } = await api("/api/me/token", { method: "POST" });
+  $("tokout").innerHTML = `Copy it now, it is shown once:<br><code>${esc(token)}</code> <button class="sm" id="cp">Copy</button>`;
+  $("cp").onclick = () => copyText(token);
+};
+$("revoke").onclick = async () => { await api("/api/me/token", { method: "DELETE" }); $("tokout").textContent = "Token revoked."; };
+
+api("/api/system").then(s => {
+  $("sys").innerHTML = `
+    <p>Parallel jobs: <b>${s.workers}</b> (FC_MAX_CONCURRENT_JOBS) · running ${s.running}, queued ${s.queued}</p>
+    <p>Highlight finder default: <b>${esc(s.default_provider)}</b><br>
+       Claude: ${s.claude_configured ? `configured, model <code>${esc(s.claude_model)}</code>` : "not configured (set ANTHROPIC_API_KEY)"}<br>
+       Ollama: <code>${esc(s.ollama_url)}</code> model <code>${esc(s.ollama_model)}</code></p>
+    <p>Default transcription model: <code>${esc(s.whisper_default)}</code></p>`;
+  if ($("fonts")) $("fonts").textContent = s.fonts.length ? "Installed: " + s.fonts.join(", ") : "No custom fonts uploaded.";
+});
+
+{% if user.is_admin %}
+function showBrand(b) {
+  $("app_name").value = b.app_name; $("accent").value = b.accent;
+  $("wm_enabled").checked = b.watermark.enabled; $("wm_position").value = b.watermark.position;
+  $("wm_opacity").value = b.watermark.opacity; $("wm_size").value = b.watermark.size;
+  $("logo").style.display = b.has_logo ? "" : "none";
+  if (b.has_logo) $("logo").src = "/branding/logo.png?" + Date.now();
+}
+api("/api/branding").then(showBrand);
+$("savebrand").onclick = async () => {
+  try {
+    await api("/api/branding", { method: "PUT", body: { app_name: $("app_name").value, accent: $("accent").value,
+      watermark: { enabled: $("wm_enabled").checked, position: $("wm_position").value, opacity: +$("wm_opacity").value, size: +$("wm_size").value } } });
+    location.reload();
+  } catch (e) { toast(e.message, true); }
+};
+$("logofile").onchange = async () => {
+  const fd = new FormData(); fd.append("file", $("logofile").files[0]);
+  try { showBrand(await api("/api/branding/logo", { method: "POST", form: fd })); toast("Logo updated"); } catch (e) { toast(e.message, true); }
+};
+$("logodel").onclick = async () => showBrand(await api("/api/branding/logo", { method: "DELETE" }));
+$("fontfile").onchange = async () => {
+  const fd = new FormData(); fd.append("file", $("fontfile").files[0]);
+  try { await api("/api/fonts", { method: "POST", form: fd }); toast("Font added"); location.reload(); } catch (e) { toast(e.message, true); }
+};
+async function loadUsers() {
+  const users = await api("/api/users");
+  $("users").innerHTML = users.map(u => `<tr><td>${esc(u.username)}</td><td>${u.is_admin ? "Admin" : "User"}</td>
+    <td>${u.id === {{ user.id }} ? "" : `<button class="sm danger" onclick="delUser(${u.id})">Delete</button>`}</td></tr>`).join("");
+}
+async function delUser(id) {
+  if (!confirm("Delete this user and all of their projects?")) return;
+  try { await api(`/api/users/${id}`, { method: "DELETE" }); loadUsers(); } catch (e) { toast(e.message, true); }
+}
+$("adduser").onclick = async () => {
+  try { await api("/api/users", { method: "POST", body: { username: $("nu").value, password: $("np").value, is_admin: $("na").checked } });
+    $("nu").value = $("np").value = ""; loadUsers(); toast("User added"); } catch (e) { toast(e.message, true); }
+};
+loadUsers();
+{% endif %}
+</script>
+{% endblock %}

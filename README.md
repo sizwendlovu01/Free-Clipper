@@ -1,0 +1,87 @@
+# ClipForge AI
+
+Self-hosted AI clipper: upload a long video (or paste a link), get captioned, vertical, ready-to-post short clips. No watermarks except your own, no limits except your hardware, every file in open formats.
+
+## What it does
+
+1. **Ingest**: upload a file (video or audio) or paste a link (YouTube, Vimeo, X, Twitch VODs and ~1800 other sites via yt-dlp).
+2. **Transcribe**:
+   - **Links**: uses the platform's own speech-recognition captions with per-word timing when available (YouTube: an hour of video in ~10 seconds), rebuilt into phrases at natural speech pauses. Falls back to local transcription automatically. Choose "Always transcribe on this computer" for maximum accuracy or translation.
+   - **Uploads**: local faster-whisper in batched mode (99 languages, word timestamps, memory-bounded for multi-hour files). Optional translation of captions to English.
+3. **Find highlights** with one of:
+   - **Claude** (cloud, best picks): set `ANTHROPIC_API_KEY`. Uses `claude-opus-5-5` with structured JSON output.
+   - **Ollama** (fully local LLM, free, no API key): install [Ollama](https://ollama.com), run `ollama pull qwen2.5:3b`.
+   - **Built-in heuristic** (no AI, no network): speech density, loudness and hook phrases.
+   The default (`FC_AI_PROVIDER=auto`) uses Claude if a key is set, otherwise Ollama if it is running with the configured model, otherwise the heuristic.
+   If an AI provider fails, the job falls back to the heuristic instead of failing.
+4. **Render** each clip with ffmpeg: 9:16 / 1:1 / 4:5 / 16:9, face-following crop (or center, blurred background, black bars), burned-in animated captions with active-word highlight, loudness normalization, optional logo watermark. Audio-only uploads become branded waveform videos.
+5. **Review and edit** in the web UI: play clips, change start/end, title, hashtags and caption style, re-render, add custom clips from the transcript, re-run highlight detection with new settings (transcript is reused).
+
+## Outputs (open standards)
+
+Per clip: `clip.mp4` (H.264/AAC), `thumb.jpg`, `captions.srt`, `captions.vtt`, `captions.ass`, `meta.json`.
+Per project: full transcript as SRT, WebVTT, TXT and JSON, the original source, and a ZIP of everything with a `clips.json` index.
+Everything lives under `data/jobs/<project-id>/` on your disk.
+
+## Run on Windows / macOS / Linux
+
+Needs Python 3.11+ and ffmpeg on PATH.
+
+```bash
+python -m venv .venv
+```
+
+```bash
+.venv\Scripts\python -m pip install -r requirements.txt
+```
+
+(macOS/Linux: `.venv/bin/python -m pip install -r requirements.txt`)
+
+```bash
+.venv\Scripts\python run.py
+```
+
+Open http://127.0.0.1:8000 and create the admin account. The first run downloads the chosen Whisper model.
+
+Copy `.env.example` to `.env` to change settings (AI provider, capacity, models, port, storage folder).
+
+## Run with Docker
+
+```bash
+docker compose up -d --build
+```
+
+Data is stored in `./data`. For a fully local AI highlight finder: `docker compose --profile ollama up -d`, pull a model, and set `FC_AI_PROVIDER=ollama`, `FC_OLLAMA_URL=http://ollama:11434` in `.env`.
+
+## Speed and capacity
+
+How a job runs, fastest path first:
+- **Links**: captions, highlight picking and the video download run at the same time, then clips render in parallel. Measured on a busy 15 W laptop (i5-1235U, no GPU): a 1-hour YouTube podcast went from link to 4 finished clips in **4.6 minutes**, download included.
+- **Uploads**: local transcription is the slow step on CPU (about 2.3x faster than real time with `small` on that laptop, so roughly 25 minutes per hour of video). Use `base` for speed, or a machine with an NVIDIA GPU (used automatically) for large models.
+- **Local AI** (Ollama) reviews a shortlist of the strongest moments rather than the whole transcript, so its time stays about 2 minutes regardless of video length.
+
+Settings: `FC_MAX_CONCURRENT_JOBS` (projects at once), `FC_RENDER_WORKERS` (clips rendered at once per project), `FC_WHISPER_BATCH_SIZE` (lower it if transcription runs out of memory).
+
+## Branding and templates
+
+- **Settings** (admin): app name, accent color, logo, logo watermark on clips (position, size, opacity), custom caption fonts (.ttf/.otf), users.
+- **Caption styles**: font, size, colors, outline, shadow, background box, uppercase, words per caption, position, active-word highlight, pop animation, with a live preview. Three built-in styles included.
+
+## API
+
+Every action in the UI is a JSON API. Create a token in Settings and send `Authorization: Bearer <token>`. Interactive docs at `/api/docs`.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" -F "url=https://www.youtube.com/watch?v=..." -F 'options={"max_clips":5,"aspect":"9:16"}' http://127.0.0.1:8000/api/jobs
+```
+
+## Security notes
+
+- Passwords hashed with scrypt; login attempts throttled per IP; sessions are signed cookies (SameSite=Lax) and cross-site write requests are rejected.
+- Sign-up is off by default; the first account is the admin, who adds users.
+- Behind HTTPS (reverse proxy), set `FC_HTTPS_ONLY_COOKIES=true`. Bind to `0.0.0.0` only when you intend to expose it.
+- Only download content you have the rights to use.
+
+## Tip: keep data out of cloud-synced folders
+
+If the project sits in OneDrive/Dropbox, the sync client will re-upload every video and render, slowing everything down. Point `FC_DATA_DIR` at a local, unsynced folder (e.g. `C:\ClipForgeData`).

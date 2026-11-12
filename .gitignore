@@ -1,0 +1,22 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+
+# Videos, clips, models and the database
+data/
+data-*/
+*.db
+*.log
+
+# Editor / tooling
+.claude/
+.vscode/
+.idea/
+.vercel/

@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Caption styles</h1>
+<p class="muted">Styles are applied when clips are rendered. Pick one per project, or per clip from its Edit menu.
+  Fonts must be installed on the server; admins can add .ttf/.otf files in Settings.</p>
+<div class="grid two">
+  <div class="card">
+    <div class="row" style="margin-bottom:14px">
+      <select id="pick" style="flex:1"></select>
+      <button id="new">New style</button>
+    </div>
+    <div class="field"><label for="name">Name</label><input id="name" type="text" maxlength="60"></div>
+    <div class="fields">
+      <div><label for="font">Font family</label><input id="font" type="text" list="fontlist"><datalist id="fontlist"></datalist></div>
+      <div><label for="font_size">Size</label><input id="font_size" type="number" min="20" max="200"></div>
+      <div><label for="words_per_line">Words per caption</label><input id="words_per_line" type="number" min="1" max="12"></div>
+      <div><label for="position">Position</label><select id="position"><option value="top">Top</option><option value="middle">Middle</option><option value="bottom">Bottom</option></select></div>
+      <div><label for="margin_v">Distance from edge</label><input id="margin_v" type="number" min="0" max="900"></div>
+      <div><label for="highlight_mode">Word highlight</label><select id="highlight_mode"><option value="word">Active word</option><option value="none">None</option></select></div>
+      <div><label for="animation">Animation</label><select id="animation"><option value="pop">Pop in</option><option value="none">None</option></select></div>
+      <div><label for="outline">Outline</label><input id="outline" type="number" min="0" max="20" step="0.5"></div>
+      <div><label for="shadow">Shadow</label><input id="shadow" type="number" min="0" max="20" step="0.5"></div>
+    </div>
+    <div class="row" style="margin:14px 0">
+      <label class="check"><input id="text_color" type="color"> Text</label>
+      <label class="check"><input id="highlight_color" type="color"> Highlight</label>
+      <label class="check"><input id="outline_color" type="color"> Outline</label>
+      <label class="check"><input id="box_color" type="color"> Box</label>
+    </div>
+    <div class="row" style="margin-bottom:14px">
+      <label class="check"><input id="bold" type="checkbox"> Bold</label>
+      <label class="check"><input id="uppercase" type="checkbox"> UPPERCASE</label>
+      <label class="check"><input id="box" type="checkbox"> Background box</label>
+      <label class="check">Box opacity <input id="box_opacity" type="number" min="0" max="1" step="0.05" style="width:80px"></label>
+    </div>
+    <div class="row">
+      <button class="primary" id="save">Save</button>
+      <button class="danger" id="del">Delete</button>
+      <span class="small muted" id="ro"></span>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Preview</h3>
+    <div class="preview-stage" id="stage"><div class="cap" id="cap"></div></div>
+    <p class="small muted" style="text-align:center">Approximate browser preview. Final rendering uses libass.</p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const FIELDS = ["font", "font_size", "words_per_line", "position", "margin_v", "highlight_mode", "animation", "outline",
+  "shadow", "text_color", "highlight_color", "outline_color", "box_color", "bold", "uppercase", "box", "box_opacity"];
+let list = [], current = null, me = null;
+const $ = id => document.getElementById(id);
+
+function readStyle() {
+  const s = {};
+  for (const f of FIELDS) {
+    const el = $(f);
+    s[f] = el.type === "checkbox" ? el.checked : el.type === "number" ? +el.value : el.value;
+  }
+  return s;
+}
+function fill(t) {
+  current = t;
+  $("name").value = t ? t.name : "New style";
+  const s = t ? t.style : list[0].style;
+  for (const f of FIELDS) { const el = $(f); if (el.type === "checkbox") el.checked = !!s[f]; else el.value = s[f]; }
+  const locked = t && t.builtin && !me.is_admin;
+  $("save").disabled = locked; $("del").disabled = !t || locked;
+  $("ro").textContent = locked ? "Built-in style: use New style to make an editable copy." : "";
+  preview();
+}
+function preview() {
+  const s = readStyle(), stage = $("stage"), cap = $("cap");
+  const h = stage.clientHeight || 520, k = h / 1920;
+  const words = ["this", "is", "how", "your", "captions", "will", "look"].slice(0, Math.max(1, s.words_per_line));
+  cap.innerHTML = words.map((w, i) => {
+    const t = s.uppercase ? w.toUpperCase() : w;
+    return i === 1 && s.highlight_mode === "word" ? `<span style="color:${s.highlight_color}">${t}</span>` : t;
+  }).join(" ");
+  const o = Math.max(0, s.outline * k * 1.2);
+  Object.assign(cap.style, {
+    fontFamily: `'${s.font}', sans-serif`, fontSize: `${s.font_size * k * 1.6}px`, fontWeight: s.bold ? 800 : 400,
+    color: s.text_color, top: "", bottom: "", transform: "",
+    textShadow: s.box ? "none" : `0 0 ${o}px ${s.outline_color}, ${o}px ${o}px 0 ${s.outline_color}, -${o}px -${o}px 0 ${s.outline_color}, ${o}px -${o}px 0 ${s.outline_color}, -${o}px ${o}px 0 ${s.outline_color}`,
+    background: s.box ? hexA(s.box_color, s.box_opacity) : "transparent", padding: s.box ? "4px 8px" : "0",
+  });
+  const m = `${s.margin_v * k}px`;
+  if (s.position === "top") cap.style.top = m;
+  else if (s.position === "bottom") cap.style.bottom = m;
+  else { cap.style.top = "50%"; cap.style.transform = "translateY(-50%)"; }
+}
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
+}
+async function reload(selectId) {
+  list = await api("/api/templates");
+  $("pick").innerHTML = list.map(t => `<option value="${t.id}">${esc(t.name)}${t.builtin ? " (built-in)" : ""}</option>`).join("");
+  const t = list.find(x => x.id === selectId) || list[0];
+  $("pick").value = t.id; fill(t);
+}
+$("pick").onchange = () => fill(list.find(t => t.id === +$("pick").value));
+$("new").onclick = () => { const base = current; fill(null); $("name").value = (base ? base.name : "Style") + " copy";
+  if (base) for (const f of FIELDS) { const el = $(f); if (el.type === "checkbox") el.checked = !!base.style[f]; else el.value = base.style[f]; }
+  $("save").disabled = false; preview(); };
+$("save").onclick = async () => {
+  const body = { name: $("name").value, style: readStyle() };
+  try {
+    const t = current ? await api(`/api/templates/${current.id}`, { method: "PUT", body })
+                      : await api("/api/templates", { method: "POST", body });
+    toast("Saved"); reload(t.id);
+  } catch (e) { toast(e.message, true); }
+};
+$("del").onclick = async () => {
+  if (!current || !confirm(`Delete "${current.name}"?`)) return;
+  try { await api(`/api/templates/${current.id}`, { method: "DELETE" }); reload(); } catch (e) { toast(e.message, true); }
+};
+document.querySelectorAll("input,select").forEach(el => el.addEventListener("input", preview));
+window.addEventListener("resize", preview);
+(async () => {
+  me = await api("/api/me");
+  const sys = await api("/api/system");
+  $("fontlist").innerHTML = ["Arial", "Impact", "Verdana", "Georgia", "Noto Sans", "DejaVu Sans"]
+    .concat(sys.fonts.map(f => f.replace(/\.(ttf|otf)$/i, ""))).map(f => `<option value="${esc(f)}">`).join("");
+  reload();
+})();
+</script>
+{% endblock %}

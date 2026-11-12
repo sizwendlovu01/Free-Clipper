@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>New project</h2>
+  <div class="tabs">
+    <button type="button" class="active" data-tab="upload">Upload video</button>
+    <button type="button" data-tab="link">Paste a link</button>
+  </div>
+  <form id="newjob">
+    <div id="tab-upload">
+      <input id="file" type="file" accept="video/*,audio/*" class="hidden">
+      <div class="drop" id="drop">
+        <strong>Drop a video or audio file here</strong><br>
+        <span class="small">or click to choose (up to {{ max_upload_mb }} MB)</span>
+        <div id="picked" class="small" style="margin-top:8px;color:var(--text)"></div>
+      </div>
+    </div>
+    <div id="tab-link" class="hidden field">
+      <label for="url">Video link (YouTube, Vimeo, X, Twitch VOD, direct .mp4 and ~1800 other sites via yt-dlp)</label>
+      <input id="url" type="url" placeholder="https://...">
+    </div>
+
+    <details style="margin:16px 0" open>
+      <summary style="cursor:pointer;font-weight:600;margin-bottom:12px">Clip settings</summary>
+      <div class="fields">
+        <div><label for="max_clips">Number of clips</label><input id="max_clips" type="number" min="1" max="30" value="6"></div>
+        <div><label for="min_len">Min length (s)</label><input id="min_len" type="number" min="5" max="180" value="20"></div>
+        <div><label for="max_len">Max length (s)</label><input id="max_len" type="number" min="10" max="300" value="60"></div>
+        <div><label for="aspect">Format</label>
+          <select id="aspect">
+            <option value="9:16">9:16 vertical (Shorts, TikTok, Reels)</option>
+            <option value="1:1">1:1 square</option>
+            <option value="4:5">4:5 portrait feed</option>
+            <option value="16:9">16:9 landscape</option>
+            <option value="original">Original size</option>
+          </select></div>
+        <div><label for="reframe">Reframing</label>
+          <select id="reframe">
+            <option value="auto">Follow faces (auto)</option>
+            <option value="center">Center crop</option>
+            <option value="fit_blur">Fit with blurred background</option>
+            <option value="fit_black">Fit with black bars</option>
+          </select></div>
+        <div><label for="template_id">Caption style</label><select id="template_id"></select></div>
+        <div><label for="language">Spoken language</label>
+          <select id="language">
+            <option value="">Detect automatically</option>
+            <option value="en">English</option><option value="es">Spanish</option><option value="pt">Portuguese</option>
+            <option value="fr">French</option><option value="de">German</option><option value="it">Italian</option>
+            <option value="nl">Dutch</option><option value="ru">Russian</option><option value="uk">Ukrainian</option>
+            <option value="pl">Polish</option><option value="tr">Turkish</option><option value="ar">Arabic</option>
+            <option value="hi">Hindi</option><option value="bn">Bengali</option><option value="ur">Urdu</option>
+            <option value="id">Indonesian</option><option value="vi">Vietnamese</option><option value="th">Thai</option>
+            <option value="zh">Chinese</option><option value="ja">Japanese</option><option value="ko">Korean</option>
+            <option value="sw">Swahili</option><option value="zu">Zulu</option><option value="af">Afrikaans</option>
+            <option value="yo">Yoruba</option><option value="he">Hebrew</option><option value="fa">Persian</option>
+          </select></div>
+        <div><label for="transcript_source">Transcript (links)</label>
+          <select id="transcript_source">
+            <option value="auto">Platform captions when available (fastest)</option>
+            <option value="whisper">Always transcribe on this computer</option>
+          </select></div>
+        <div><label for="whisper_model">Local transcription model</label>
+          <select id="whisper_model">
+            {% for m in whisper_models %}<option value="{{ m }}" {{ 'selected' if m == default_model }}>{{ m }}</option>{% endfor %}
+          </select></div>
+        <div><label for="provider">Highlight finder</label>
+          <select id="provider">
+            <option value="auto">Default</option>
+            <option value="claude">Claude (cloud AI)</option>
+            <option value="ollama">Ollama (local AI)</option>
+            <option value="heuristic">Built-in (no AI)</option>
+          </select></div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <label class="check"><input id="captions" type="checkbox" checked> Burn in captions</label>
+        <label class="check"><input id="loudnorm" type="checkbox" checked> Normalize loudness</label>
+        <label class="check"><input id="translate" type="checkbox"> Translate captions to English</label>
+      </div>
+      <div class="field" style="margin-top:14px">
+        <label for="prompt">Instructions for the AI (optional)</label>
+        <input id="prompt" type="text" maxlength="1000" placeholder="e.g. focus on the funny moments, skip the sponsor read">
+      </div>
+    </details>
+    <div class="row">
+      <button class="primary" id="go" type="submit">Find clips</button>
+      <div class="progress hidden" id="upbar" style="flex:1;max-width:320px"><div style="width:0"></div></div>
+      <span class="small muted" id="uptext"></span>
+    </div>
+  </form>
+  <p class="small muted" id="sysinfo" style="margin:14px 0 0"></p>
+</div>
+
+<div class="row" style="margin-bottom:12px"><h2 style="margin:0">Projects</h2></div>
+<div class="grid jobs" id="jobs"><p class="muted">Loading...</p></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let mode = "upload";
+document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => {
+  mode = b.dataset.tab;
+  document.querySelectorAll("[data-tab]").forEach(x => x.classList.toggle("active", x === b));
+  document.getElementById("tab-upload").classList.toggle("hidden", mode !== "upload");
+  document.getElementById("tab-link").classList.toggle("hidden", mode !== "link");
+}));
+
+const fileInput = document.getElementById("file"), drop = document.getElementById("drop");
+drop.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", () => showPicked());
+["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => { if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; showPicked(); } });
+function showPicked() {
+  const f = fileInput.files[0];
+  document.getElementById("picked").textContent = f ? `${f.name} (${(f.size / 1048576).toFixed(1)} MB)` : "";
+}
+
+(async () => {
+  const [tpls, sys] = await Promise.all([api("/api/templates"), api("/api/system")]);
+  document.getElementById("template_id").innerHTML = tpls.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join("");
+  const names = { claude: `Claude (${sys.claude_model})`, heuristic: "built-in heuristic", ollama: `Ollama (${sys.ollama_model})` };
+  document.querySelector('#provider option[value=auto]').textContent = `Default: ${names[sys.default_provider] || sys.default_provider}`;
+  document.getElementById("sysinfo").textContent =
+    `${sys.workers} video(s) processed at a time. Queue: ${sys.running} running, ${sys.queued} waiting.` +
+    (sys.claude_configured ? "" : " Set ANTHROPIC_API_KEY to use Claude for smarter highlight picks.");
+})();
+
+function options() {
+  const v = id => document.getElementById(id).value, c = id => document.getElementById(id).checked;
+  return { max_clips: +v("max_clips"), min_len: +v("min_len"), max_len: +v("max_len"), aspect: v("aspect"),
+    reframe: v("reframe"), template_id: v("template_id"), language: v("language"), whisper_model: v("whisper_model"), transcript_source: v("transcript_source"),
+    provider: v("provider"), captions: c("captions"), loudnorm: c("loudnorm"), translate: c("translate"), prompt: v("prompt") };
+}
+
+document.getElementById("newjob").addEventListener("submit", e => {
+  e.preventDefault();
+  const fd = new FormData();
+  if (mode === "upload") {
+    if (!fileInput.files[0]) return toast("Choose a file first", true);
+    fd.append("file", fileInput.files[0]);
+  } else {
+    if (!document.getElementById("url").value.trim()) return toast("Paste a link first", true);
+    fd.append("url", document.getElementById("url").value.trim());
+  }
+  fd.append("options", JSON.stringify(options()));
+  const go = document.getElementById("go"), bar = document.getElementById("upbar"), txt = document.getElementById("uptext");
+  go.disabled = true; bar.classList.remove("hidden");
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/jobs");
+  xhr.upload.onprogress = ev => {
+    if (ev.lengthComputable) {
+      const pct = ev.loaded / ev.total * 100;
+      bar.firstElementChild.style.width = pct + "%";
+      txt.textContent = pct < 100 ? `Uploading ${pct.toFixed(0)}%` : "Saving...";
+    }
+  };
+  xhr.onload = () => {
+    go.disabled = false; bar.classList.add("hidden"); txt.textContent = "";
+    let data = {}; try { data = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status >= 200 && xhr.status < 300) { location.href = `/jobs/${data.id}`; }
+    else toast(data.detail || "Upload failed", true);
+  };
+  xhr.onerror = () => { go.disabled = false; bar.classList.add("hidden"); toast("Network error", true); };
+  xhr.send(fd);
+});
+
+async function loadJobs() {
+  let jobs;
+  try { jobs = await api("/api/jobs"); }
+  catch { setTimeout(loadJobs, 5000); return; }  // server restarting or offline: keep retrying
+  document.getElementById("sysinfo").dataset.ok = "1";
+  const el = document.getElementById("jobs");
+  if (!jobs.length) { el.innerHTML = '<p class="muted">No projects yet. Upload a video above.</p>'; return; }
+  el.innerHTML = jobs.map(j => `
+    <a class="card job" href="/jobs/${j.id}" style="margin:0">
+      <div class="thumb" style="${j.thumb ? `background-image:url('${j.thumb}')` : ""}"></div>
+      <div class="meta">
+        <div class="title" title="${esc(j.title)}">${esc(j.title)}</div>
+        <div class="row small muted" style="gap:8px;margin:4px 0">${badge(j.status)}
+          ${j.duration ? fmtTime(j.duration) : ""} ${j.language ? "· " + esc(j.language) : ""}
+          ${j.clip_count ? `· ${j.clips_done}/${j.clip_count} clips` : ""}</div>
+        ${["queued", "running"].includes(j.status) ? `<div class="small muted">${esc(j.stage)}</div>
+          <div class="progress" style="margin-top:6px"><div style="width:${(j.progress * 100).toFixed(1)}%"></div></div>` : ""}
+        ${j.status === "failed" ? `<div class="small" style="color:var(--danger)">${esc((j.error || "").slice(0, 140))}</div>` : ""}
+      </div>
+    </a>`).join("");
+  if (jobs.some(j => ["queued", "running"].includes(j.status))) setTimeout(loadJobs, 2500);
+}
+loadJobs();
+</script>
+{% endblock %}
