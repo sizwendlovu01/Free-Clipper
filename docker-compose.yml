@@ -2,21 +2,23 @@ services:
   freeclipper:
     build: .
     ports:
-      - "8000:8000"
+      # Local access only; on a server the HTTPS proxy below is the public entrance.
+      - "127.0.0.1:${FC_LOCAL_PORT:-8000}:8000"
     volumes:
-      - ./data:/data
+      - clipforge-data:/data
     env_file:
       - path: .env
         required: false
     environment:
       FC_HOST: 0.0.0.0
+      FC_PORT: "8000"
       FC_DATA_DIR: /data
     restart: unless-stopped
 
-  # Optional fully-local AI for highlight picking. Start with:
+  # Optional fully-local AI for highlight picking:
   #   docker compose --profile ollama up -d
   #   docker compose exec ollama ollama pull qwen2.5:3b
-  # then set FC_AI_PROVIDER=ollama and FC_OLLAMA_URL=http://ollama:11434 in .env
+  # and set FC_OLLAMA_URL=http://ollama:11434 in .env
   ollama:
     image: ollama/ollama
     profiles: ["ollama"]
@@ -24,5 +26,26 @@ services:
       - ollama:/root/.ollama
     restart: unless-stopped
 
+  # Optional HTTPS for a public server (free automatic certificates via Let's Encrypt).
+  # Set DOMAIN in .env, open ports 80 and 443, then: docker compose --profile https up -d
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - freeclipper
+    restart: unless-stopped
+
 volumes:
+  clipforge-data:
   ollama:
+  caddy-data:
+  caddy-config:

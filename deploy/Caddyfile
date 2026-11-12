@@ -1,0 +1,5 @@
+# HTTPS front door for ClipForge AI. Caddy obtains and renews the certificate automatically.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy freeclipper:8000
+}

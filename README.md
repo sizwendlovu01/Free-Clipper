@@ -51,9 +51,40 @@ Copy `.env.example` to `.env` to change settings (AI provider, capacity, models,
 docker compose up -d --build
 ```
 
-Data is stored in `./data`. For a fully local AI highlight finder: `docker compose --profile ollama up -d`, pull a model, and set `FC_AI_PROVIDER=ollama`, `FC_OLLAMA_URL=http://ollama:11434` in `.env`.
+Open http://127.0.0.1:8000. Data is kept in the Docker volume `clipforge-data` (survives restarts and rebuilds). For a fully local AI highlight finder: `docker compose --profile ollama up -d`, then `docker compose exec ollama ollama pull qwen2.5:3b`, and set `FC_OLLAMA_URL=http://ollama:11434` in `.env`.
 
-## Deploy to a cloud host
+## Deploy free on Oracle Cloud (Always Free)
+
+Oracle's Always Free tier includes Arm compute equal to 2 OCPUs and 12 GB of memory, plus 200 GB of disk, free for the life of the account (per Oracle's Always Free resources page). That is enough to run ClipForge AI with the free local AI model, always on, with HTTPS.
+
+1. **Create an account** at oracle.com/cloud/free. Oracle asks for a card to verify your identity; Always Free resources are not charged.
+2. **Create the server**: Compute, then Instances, then Create instance.
+   - Image: **Canonical Ubuntu 24.04** (or 22.04).
+   - Shape: Change shape, then **Ampere**, then `VM.Standard.A1.Flex` with **2 OCPUs and 12 GB memory**.
+   - Networking: keep "Assign a public IPv4 address" on.
+   - SSH keys: let Oracle generate a key pair and **download the private key**.
+   - Boot volume: 50 GB or more (up to 200 GB is free in total).
+   - If you see "Out of host capacity", try another availability domain or try again later.
+3. **Open the web ports**: on the instance page open the subnet, then its Security List, then Add Ingress Rules: source `0.0.0.0/0`, TCP, destination port `80`; add a second rule for port `443`.
+4. **Connect** (Windows PowerShell, macOS or Linux terminal), using the server's public IP:
+   ```bash
+   ssh -i path/to/your-private-key.key ubuntu@YOUR_SERVER_IP
+   ```
+5. **Install ClipForge AI** on the server:
+   ```bash
+   curl -fsSLO https://raw.githubusercontent.com/sizwendlovu01/Free-Clipper/main/deploy/oracle-setup.sh
+   ```
+   ```bash
+   bash oracle-setup.sh
+   ```
+   It installs Docker, opens the server firewall, builds the app, downloads the free local AI model, sets up HTTPS and prints your address (like `https://203-0-113-7.sslip.io`, a free hostname for your IP) and a **setup code**. The first run takes 10-20 minutes.
+6. **Open the address**, create your admin account with the setup code, and add users for your clients in Settings.
+
+Updating to the latest version: run `bash oracle-setup.sh` again (data and settings are kept). Own domain: point its DNS A record at the server, then `bash oracle-setup.sh --domain clips.example.com`. Claude for better picks: put `ANTHROPIC_API_KEY=...` in `~/Free-Clipper/.env` and re-run the script.
+
+Good to know: Oracle may reclaim Always Free servers that sit idle for 7 days (CPU, network and memory all under 20%). The free server has no GPU and 2 CPUs, so transcribing uploaded videos is slow (expect it to take longer than the video itself); YouTube links stay fast because they use platform captions.
+
+## Deploy to another container host
 
 ClipForge AI runs as one Docker container that needs a long-running process, ffmpeg and a persistent disk. Any container host works (Render, Railway, Fly.io, a VPS with Docker). The container:
 - listens on `$PORT` if the platform sets it (otherwise 8000);
