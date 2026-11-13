@@ -1,7 +1,12 @@
-"""SQLite storage. One short-lived connection per call keeps it safe across worker threads."""
+"""SQLite storage. One short-lived connection per call keeps it safe across worker threads.
+
+WAL mode lets the web server read while a worker writes; busy_timeout makes concurrent writers wait
+instead of failing; job claiming is a single atomic UPDATE so a job is never processed twice.
+"""
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -78,6 +83,8 @@ def connect() -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(config.DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA synchronous = NORMAL")  # safe with WAL; a power cut can lose only the last commit
     try:
         yield conn
         conn.commit()
@@ -156,3 +163,50 @@ def init() -> None:
             if style.get("position") == "middle" and style.get("margin_v") == 220:
                 style.update(position="bottom", margin_v=560)
                 conn.execute("UPDATE templates SET style = ? WHERE id = ?", (json.dumps(style), row[0]))
+        # Additive column migrations: safe to run on every start.
+        _add_column(conn, "jobs", "attempts", "INTEGER NOT NULL DEFAULT 0")
+        _add_column(conn, "jobs", "started_at", "TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS jobs_user ON jobs(user_id, created_at)")
+        result = conn.execute("PRAGMA quick_check").fetchone()[0]
+        if result != "ok":
+            log.critical("Database integrity check failed: %s. Restore from a backup (see RAILWAY_DEPLOYMENT.md).",
+                         result)
+
+
+log = logging.getLogger("freeclipper.db")
+
+
+def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+def claim_job() -> str | None:
+    """Atomically move the oldest queued job to 'running'. Safe across threads and processes."""
+    rows = query(
+        "UPDATE jobs SET status = 'running', attempts = attempts + 1, started_at = ?, updated_at = ? "
+        "WHERE id = (SELECT id FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1) "
+        "AND status = 'queued' RETURNING id", (now(), now()))
+    return rows[0]["id"] if rows else None
+
+
+def claim_clip() -> str | None:
+    """Atomically pick one queued single-clip re-render whose project isn't being processed."""
+    rows = query(
+        "UPDATE clips SET status = 'rendering', updated_at = ? WHERE id = ("
+        "  SELECT c.id FROM clips c JOIN jobs j ON j.id = c.job_id"
+        "  WHERE c.status = 'queued' AND j.status IN ('done', 'failed') ORDER BY c.updated_at LIMIT 1"
+        ") AND status = 'queued' RETURNING id", (now(),))
+    return rows[0]["id"] if rows else None
+
+
+def backup_to(path: str) -> None:
+    """Consistent online copy of the database (safe while the app is writing)."""
+    src = sqlite3.connect(config.DB_PATH, timeout=30)
+    dst = sqlite3.connect(path)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()

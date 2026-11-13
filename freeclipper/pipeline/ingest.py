@@ -5,6 +5,8 @@ while the full video keeps downloading in the background.
 """
 from __future__ import annotations
 
+import ipaddress
+import socket
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
@@ -12,12 +14,43 @@ from urllib.parse import urlparse
 from .. import config
 
 
+def _is_public_host(host: str) -> bool:
+    """False for localhost, private networks, link-local (cloud metadata) and other internal addresses."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved
+                or ip.is_unspecified or (ip.version == 6 and ip.ipv4_mapped and not ip.ipv4_mapped.is_global)):
+            return False
+    return True
+
+
 def validate_url(url: str) -> str:
+    """Accept only public http(s) links, so the server can't be used to reach internal services."""
     url = url.strip()
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or len(url) > 2000:
         raise ValueError("Enter a full http(s) link to the video.")
+    if not _is_public_host(parsed.hostname):
+        raise ValueError("That link points to a private or unreachable address.")
     return url
+
+
+def video_info(url: str) -> dict:
+    """Metadata only (title, duration), without downloading media."""
+    import yt_dlp
+
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True,
+                           "socket_timeout": 30, "extractor_retries": 3}) as ydl:
+        info = ydl.extract_info(url, download=False)
+    if info.get("_type") == "playlist":
+        raise ValueError("Playlists are not supported; link to a single video.")
+    if info.get("is_live"):
+        raise ValueError("Live streams can't be clipped; wait until the stream has ended.")
+    return {"title": info.get("title"), "duration": info.get("duration")}
 
 
 def _base_opts(progress: Callable[[float], None], should_stop: Callable[[], bool]) -> dict:
@@ -55,6 +88,7 @@ def _base_opts(progress: Callable[[float], None], should_stop: Callable[[], bool
         "extractor_retries": 3,
         "socket_timeout": 30,
         "concurrent_fragment_downloads": 4,
+        "max_filesize": config.MAX_DOWNLOAD_MB * 1024 * 1024,
     }
     if config.FFMPEG != "ffmpeg":
         opts["ffmpeg_location"] = config.FFMPEG
@@ -73,7 +107,8 @@ def _run(url: str, opts: dict, dest_dir: Path, stem: str) -> tuple[Path, str]:
         if not path or not path.exists():
             candidates = [p for p in sorted(dest_dir.glob(f"{stem}.*")) if not p.name.endswith((".part", ".ytdl"))]
             if not candidates:
-                raise RuntimeError("Download finished but no file was found.")
+                raise RuntimeError(f"No file was downloaded. The video may be larger than the "
+                                   f"{config.MAX_DOWNLOAD_MB} MB download limit.")
             path = candidates[0]
         return path, info.get("title") or url
 

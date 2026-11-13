@@ -27,23 +27,28 @@ def _even(v: float) -> int:
 
 YUNET_URL = ("https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
              "face_detection_yunet_2023mar.onnx")
+YUNET_SHA256 = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
 _yunet_lock = threading.Lock()
 
 
 def _yunet_model() -> Path | None:
-    """OpenCV's YuNet face detector (233 KB, handles angled faces). Downloaded once; None if offline."""
-    path = config.DATA_DIR / "models" / "face_detection_yunet_2023mar.onnx"
+    """OpenCV's YuNet face detector (233 KB, handles angled faces). Baked into the Docker image;
+    otherwise downloaded once into MODEL_DIR and checksum-verified. None if unavailable."""
+    import hashlib
+
     with _yunet_lock:
-        if path.exists() and path.stat().st_size > 100_000:
-            return path
+        for candidate in (config.YUNET_MODEL, config.MODEL_DIR / "face_detection_yunet_2023mar.onnx"):
+            if candidate.exists() and candidate.stat().st_size > 100_000:
+                return candidate
+        path = config.MODEL_DIR / "face_detection_yunet_2023mar.onnx"
         try:
             import httpx
 
             path.parent.mkdir(parents=True, exist_ok=True)
             resp = httpx.get(YUNET_URL, follow_redirects=True, timeout=30)
             resp.raise_for_status()
-            if len(resp.content) < 100_000:
-                raise ValueError("unexpected model size")
+            if hashlib.sha256(resp.content).hexdigest() != YUNET_SHA256:
+                raise ValueError("checksum mismatch")
             tmp = path.with_suffix(".tmp")
             tmp.write_bytes(resp.content)
             tmp.replace(path)
@@ -302,13 +307,19 @@ def render_clip(job_dir: Path, src: Path, info: dict, clip: dict, transcript: di
         if options.get("loudnorm", True):
             cmd += ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"]
     cmd += ["-c:v", "libx264", "-preset", config.X264_PRESET, "-crf", str(config.X264_CRF),
-            "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart", tmp.name]
-    media.run(cmd, cwd=out_dir)
-    # Never report success for a broken file: the output must be a real, full-length video.
-    check = media.probe(tmp)
-    if not check["has_video"] or check["duration"] < min(1.0, duration * 0.9) or \
-            abs(check["duration"] - duration) > max(1.5, duration * 0.1):
-        raise media.MediaError(f"Rendered file is incomplete ({check['duration']:.1f}s of {duration:.1f}s).")
+            "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart", *media.thread_args(), tmp.name]
+    try:
+        # A clip should encode in a few times its length even on a small server; stop runaway renders.
+        media.run(cmd, cwd=out_dir, timeout=min(config.JOB_TIMEOUT_SECONDS, max(300.0, duration * 30)))
+        # Never report success for a broken file: the output must be a real, full-length video.
+        check = media.probe(tmp)
+        if not check["has_video"] or check["duration"] < min(1.0, duration * 0.9) or \
+                abs(check["duration"] - duration) > max(1.5, duration * 0.1):
+            raise media.MediaError(
+                f"Rendered file is incomplete ({check['duration']:.1f}s of {duration:.1f}s).")
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
     shutil.move(str(tmp), str(out_dir / "clip.mp4"))
     media.thumbnail(out_dir / "clip.mp4", out_dir / "thumb.jpg", min(1.0, duration / 2))
 

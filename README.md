@@ -53,6 +53,16 @@ docker compose up -d --build
 
 Open http://127.0.0.1:8000. Data is kept in the Docker volume `clipforge-data` (survives restarts and rebuilds). For a fully local AI highlight finder: `docker compose --profile ollama up -d`, then `docker compose exec ollama ollama pull qwen2.5:3b`, and set `FC_OLLAMA_URL=http://ollama:11434` in `.env`.
 
+## Deploy on Railway
+
+Full step-by-step guide, environment variables, volume setup, backups and troubleshooting:
+**[RAILWAY_DEPLOYMENT.md](RAILWAY_DEPLOYMENT.md)**. In short: create a project from this GitHub repo (the
+`Dockerfile` is used automatically), attach a volume at `/data`, set `SECRET_KEY`, `SETUP_TOKEN`,
+`SESSION_HTTPS_ONLY=true` and `CLIENT_IP_HEADER=X-Real-IP`, set the health check path to `/health`, and generate a domain.
+
+Every limit (upload size, video length, concurrency, per-user quotas, storage) is an environment variable; see
+`.env.example`.
+
 ## Deploy free on Oracle Cloud (Always Free)
 
 Oracle's Always Free tier includes Arm compute equal to 2 OCPUs and 12 GB of memory, plus 200 GB of disk, free for the life of the account (per Oracle's Always Free resources page). That is enough to run ClipForge AI with the free local AI model, always on, with HTTPS.

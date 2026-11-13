@@ -34,17 +34,22 @@ def _device() -> tuple[str, str]:
 
 
 def get_model(size: str):
+    """Shared model instance. Only one model size stays loaded: switching sizes releases the previous
+    one (a job still using it keeps its own reference until it finishes), so RAM holds one model."""
     from faster_whisper import WhisperModel
 
+    if size not in config.WHISPER_MODELS:
+        size = config.WHISPER_MODEL
     device, compute = _device()
     key = (size, device, compute)
     with _lock:
         if key not in _models:
+            _models.clear()
             _models[key] = WhisperModel(
                 size, device=device, compute_type=compute,
                 cpu_threads=config.WHISPER_CPU_THREADS,
                 num_workers=config.MAX_CONCURRENT_JOBS,
-                download_root=str(config.DATA_DIR / "models"),
+                download_root=str(config.MODEL_DIR),
             )
         return _models[key]
 
@@ -56,8 +61,16 @@ def model_cached(size: str) -> bool:
         repo = _MODELS.get(size, size)
     except ImportError:
         return True
-    folder = config.DATA_DIR / "models" / ("models--" + repo.replace("/", "--"))
+    folder = config.MODEL_DIR / ("models--" + repo.replace("/", "--"))
     return folder.exists() and any(folder.rglob("model.bin"))
+
+
+def preload(size: str) -> None:
+    """Download a model's files into MODEL_DIR without loading it into memory."""
+    from faster_whisper.utils import download_model
+
+    if not model_cached(size):
+        download_model(size, cache_dir=str(config.MODEL_DIR))
 
 
 def load_wav(audio: Path) -> np.ndarray:

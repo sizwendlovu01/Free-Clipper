@@ -11,7 +11,7 @@
       <input id="file" type="file" accept="video/*,audio/*" class="hidden">
       <div class="drop" id="drop">
         <strong>Drop a video or audio file here</strong><br>
-        <span class="small">or click to choose (up to {{ max_upload_mb }} MB)</span>
+        <span class="small">or click to choose (up to {{ max_upload_mb }} MB and {{ max_video_minutes }} minutes)</span>
         <div id="picked" class="small" style="margin-top:8px;color:var(--text)"></div>
       </div>
     </div>
@@ -23,7 +23,7 @@
     <details style="margin:16px 0" open>
       <summary style="cursor:pointer;font-weight:600;margin-bottom:12px">Clip settings</summary>
       <div class="fields">
-        <div><label for="max_clips">Number of clips</label><input id="max_clips" type="number" min="1" max="30" value="6"></div>
+        <div><label for="max_clips">Number of clips</label><input id="max_clips" type="number" min="1" max="{{ max_clips }}" value="{{ [6, max_clips]|min }}"></div>
         <div><label for="min_len">Min length (s)</label><input id="min_len" type="number" min="5" max="180" value="20"></div>
         <div><label for="max_len">Max length (s)</label><input id="max_len" type="number" min="10" max="300" value="60"></div>
         <div><label for="aspect">Format</label>
@@ -123,7 +123,8 @@ function showPicked() {
   document.querySelector('#provider option[value=auto]').textContent = `Default: ${names[sys.default_provider] || sys.default_provider}`;
   document.getElementById("sysinfo").textContent =
     `${sys.workers} video(s) processed at a time. Queue: ${sys.running} running, ${sys.queued} waiting.` +
-    (sys.claude_configured ? "" : " Set ANTHROPIC_API_KEY to use Claude for smarter highlight picks.");
+    (sys.limits.quotas_apply ? ` Your usage: ${sys.usage.jobs_last_24h}/${sys.limits.user_jobs_per_day} videos in 24 h, ` +
+      `${sys.usage.storage_mb}/${sys.limits.user_max_storage_mb} MB storage.` : "");
 })();
 
 function options() {

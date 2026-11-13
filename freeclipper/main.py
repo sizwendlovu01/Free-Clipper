@@ -10,6 +10,7 @@ import tempfile
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -31,12 +32,24 @@ log = logging.getLogger("freeclipper")
 
 db.init()
 runner = Runner(config.MAX_CONCURRENT_JOBS)
+FFMPEG_OK = bool(shutil.which(config.FFMPEG)) and bool(shutil.which(config.FFPROBE))
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     runner.start()
-    log.info("ClipForge AI ready: %d worker(s), data in %s", config.MAX_CONCURRENT_JOBS, config.DATA_DIR)
+    log.info("ClipForge AI ready: %d job worker(s), %d render worker(s), data in %s, database %s",
+             config.MAX_CONCURRENT_JOBS, config.RENDER_WORKERS, config.DATA_DIR, config.DB_PATH)
+    log.info("Limits: upload %d MB, video %ds, %d clips/job, job timeout %ds; highlight provider: %s",
+             config.MAX_UPLOAD_MB, config.MAX_VIDEO_SECONDS, config.MAX_CLIPS_PER_JOB,
+             config.JOB_TIMEOUT_SECONDS, config.resolve_provider("auto"))
+    if not FFMPEG_OK:
+        log.error("ffmpeg/ffprobe not found: video processing will fail")
+    if not config.SECRET_KEY_FROM_ENV:
+        log.warning("SECRET_KEY is not set; using a generated key stored in %s", config.DATA_DIR)
     yield
+    log.info("Shutting down: returning running jobs to the queue")
+    await run_in_threadpool(runner.shutdown, config.SHUTDOWN_GRACE_SECONDS)
 
 
 app = FastAPI(title="ClipForge AI", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
@@ -62,14 +75,43 @@ def as_int(value) -> int | None:
 
 # ---------------- security helpers ----------------
 
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+}
+
+
 @app.middleware("http")
-async def same_origin_guard(request: Request, call_next):
-    """Reject cross-site state-changing requests that ride on the session cookie."""
-    if request.method not in ("GET", "HEAD", "OPTIONS") and "authorization" not in request.headers:
-        origin = request.headers.get("origin") or request.headers.get("referer")
-        if origin and urlparse(origin).netloc != request.headers.get("host"):
-            return JSONResponse({"detail": "Cross-site request blocked."}, status_code=403)
-    return await call_next(request)
+async def guard(request: Request, call_next):
+    """Cross-site write protection, early rejection of oversized uploads, and security headers."""
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        if "authorization" not in request.headers:
+            origin = request.headers.get("origin") or request.headers.get("referer")
+            if origin and urlparse(origin).netloc != request.headers.get("host"):
+                return JSONResponse({"detail": "Cross-site request blocked."}, status_code=403)
+        length = request.headers.get("content-length")
+        # Video uploads: MAX_UPLOAD_SIZE_MB. Everything else (logos, fonts, JSON): 50 MB.
+        limit = (config.MAX_UPLOAD_MB + 1) * 1024 * 1024 if request.url.path == "/api/jobs" else 50 * 1024 * 1024
+        if length and length.isdigit() and int(length) > limit:
+            return JSONResponse({"detail": f"Upload is larger than the {config.MAX_UPLOAD_MB} MB limit."}
+                                if request.url.path == "/api/jobs" else {"detail": "Request too large."},
+                                status_code=413)
+    response = await call_next(request)
+    for key, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(key, value)
+    if config.HTTPS_ONLY_COOKIES:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=15552000")
+    return response
+
+
+def client_ip(request: Request) -> str:
+    if config.CLIENT_IP_HEADER:
+        value = request.headers.get(config.CLIENT_IP_HEADER, "").split(",")[0].strip()
+        if value:
+            return value
+    return request.client.host if request.client else "unknown"
 
 
 def current_user(request: Request) -> dict | None:
@@ -149,10 +191,58 @@ def job_json(j: dict, with_clips: bool = False) -> dict:
     thumb = db.one("SELECT id FROM clips WHERE job_id = ? AND status = 'done' ORDER BY score DESC LIMIT 1",
                    (j["id"],))
     out["thumb"] = f"/files/{thumb['id']}/thumb.jpg" if thumb else None
+    out["source_available"] = find_source(j["id"]) is not None
     if with_clips:
         out["clips"] = [clip_json(c) for c in db.query(
             "SELECT * FROM clips WHERE job_id = ? ORDER BY score DESC, idx", (j["id"],))]
     return out
+
+
+def user_storage_mb(user_id: int) -> int:
+    total = 0
+    for j in db.query("SELECT id FROM jobs WHERE user_id = ?", (user_id,)):
+        for p in job_dir(j["id"]).rglob("*"):
+            try:
+                if p.is_file():
+                    total += p.stat().st_size
+            except OSError:
+                pass
+    return int(total / 1024 / 1024)
+
+
+def usage(user: dict) -> dict:
+    active = db.one("SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND status IN ('queued', 'running')",
+                    (user["id"],))["n"]
+    since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
+    today = db.one("SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND created_at >= ?",
+                   (user["id"], since))["n"]
+    return {"active_jobs": active, "jobs_last_24h": today, "storage_mb": user_storage_mb(user["id"])}
+
+
+def check_capacity(user: dict, new_job: bool = True) -> None:
+    """Cost protection: server-wide queue and disk limits, plus per-user quotas (admins exempt)."""
+    from .worker import disk_free_mb
+
+    queued = db.one("SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'")["n"]
+    if queued >= config.MAX_QUEUED_JOBS:
+        raise HTTPException(503, "The processing queue is full right now. Please try again in a few minutes.")
+    if disk_free_mb() < config.MIN_FREE_DISK_MB:
+        raise HTTPException(507, "The server's storage is nearly full. Please try again later.")
+    if user["is_admin"]:
+        return
+    u = usage(user)
+    if u["active_jobs"] >= config.USER_MAX_ACTIVE_JOBS:
+        raise HTTPException(429, f"You already have {u['active_jobs']} video(s) processing. Wait for one to finish.")
+    if new_job and u["jobs_last_24h"] >= config.USER_JOBS_PER_DAY:
+        raise HTTPException(429, f"Daily limit reached ({config.USER_JOBS_PER_DAY} videos per 24 hours).")
+    if u["storage_mb"] >= config.USER_MAX_STORAGE_MB:
+        raise HTTPException(507, f"Your storage is full ({u['storage_mb']} of {config.USER_MAX_STORAGE_MB} MB). "
+                                 "Delete old projects to make room.")
+
+
+def check_render_rate(user: dict) -> None:
+    if not user["is_admin"] and not auth.limiter.allow(f"render:{user['id']}", config.USER_RENDERS_PER_HOUR, 3600):
+        raise HTTPException(429, f"Re-render limit reached ({config.USER_RENDERS_PER_HOUR} per hour). Try again later.")
 
 
 def clean_options(raw: dict, user: dict) -> dict:
@@ -164,7 +254,7 @@ def clean_options(raw: dict, user: dict) -> dict:
 
     min_len = num("min_len", 20, 5, 180)
     opts = {
-        "max_clips": num("max_clips", 6, 1, 30),
+        "max_clips": num("max_clips", min(6, config.MAX_CLIPS_PER_JOB), 1, config.MAX_CLIPS_PER_JOB),
         "min_len": min_len,
         "max_len": max(min_len + 5, num("max_len", 60, 10, 300)),
         "aspect": raw.get("aspect") if raw.get("aspect") in (*ASPECTS, "original") else "9:16",
@@ -207,7 +297,8 @@ def dashboard(request: Request):
     if isinstance(user, Response):
         return user
     return page(request, "dashboard.html", user, aspects=list(ASPECTS), whisper_models=config.WHISPER_MODELS,
-                default_model=config.WHISPER_MODEL, max_upload_mb=config.MAX_UPLOAD_MB)
+                default_model=config.WHISPER_MODEL, max_upload_mb=config.MAX_UPLOAD_MB,
+                max_video_minutes=config.MAX_VIDEO_SECONDS // 60, max_clips=config.MAX_CLIPS_PER_JOB)
 
 
 @app.get("/jobs/{job_id}")
@@ -282,7 +373,7 @@ async def api_setup(request: Request):
 
 @app.post("/api/login")
 async def api_login(request: Request):
-    ip = request.client.host if request.client else "?"
+    ip = client_ip(request)
     if auth.throttle.blocked(ip):
         raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
     body = await request.json()
@@ -300,6 +391,9 @@ async def api_signup(request: Request):
     if not config.ALLOW_SIGNUP:
         raise HTTPException(403, "Sign-up is disabled. Ask an admin for an account.")
     body = await request.json()
+    ip = client_ip(request)
+    if not auth.limiter.allow(f"signup:{ip}", config.SIGNUPS_PER_IP_PER_DAY, 86400):
+        raise HTTPException(429, "Too many new accounts from this network today. Try again tomorrow.")
     try:
         uid = auth.create_user(body.get("username", ""), body.get("password", ""))
     except ValueError as e:
@@ -371,25 +465,65 @@ def api_user_delete(uid: int, admin: dict = Depends(require_admin)):
 
 @app.get("/api/system")
 def api_system(user: dict = Depends(require_user)):
+    from .worker import disk_free_mb
+
     queue = db.one("SELECT SUM(status = 'queued') AS queued, SUM(status = 'running') AS running FROM jobs")
-    return {
+    info = {
         "workers": config.MAX_CONCURRENT_JOBS,
         "queued": queue["queued"] or 0, "running": queue["running"] or 0,
         "default_provider": config.resolve_provider("auto"),
         "claude_configured": config.has_claude_credentials(), "claude_model": config.CLAUDE_MODEL,
-        "ollama_url": config.OLLAMA_URL, "ollama_model": config.OLLAMA_MODEL,
+        "ollama_model": config.OLLAMA_MODEL,
         "whisper_default": config.WHISPER_MODEL, "whisper_models": config.WHISPER_MODELS,
         "fonts": sorted(p.name for p in config.FONTS_DIR.iterdir() if p.suffix.lower() in (".ttf", ".otf")),
+        "limits": {
+            "max_upload_mb": config.MAX_UPLOAD_MB, "max_video_seconds": config.MAX_VIDEO_SECONDS,
+            "max_clips_per_job": config.MAX_CLIPS_PER_JOB, "user_max_active_jobs": config.USER_MAX_ACTIVE_JOBS,
+            "user_jobs_per_day": config.USER_JOBS_PER_DAY, "user_max_storage_mb": config.USER_MAX_STORAGE_MB,
+            "quotas_apply": not user["is_admin"],
+        },
+        "usage": usage(user),
     }
+    if user["is_admin"]:  # server details only for admins
+        info.update(ollama_url=config.OLLAMA_URL, data_dir=str(config.DATA_DIR), disk_free_mb=disk_free_mb(),
+                    render_workers=config.RENDER_WORKERS)
+    return info
 
 
+@app.get("/health")
 @app.get("/healthz")
-def healthz():
-    """Liveness check for hosting platforms: database reachable and ffmpeg installed."""
-    db.one("SELECT 1 AS ok")
-    if not shutil.which(config.FFMPEG):
+def health():
+    """Cheap readiness check for hosting platforms: database reachable, ffmpeg installed. Never touches
+    video processing."""
+    from .worker import disk_free_mb
+
+    try:
+        db.one("SELECT 1 AS ok")
+    except Exception:
+        log.exception("health check: database error")
+        return JSONResponse({"ok": False, "detail": "database unavailable"}, status_code=503)
+    if not FFMPEG_OK:
         return JSONResponse({"ok": False, "detail": "ffmpeg not found"}, status_code=503)
-    return {"ok": True}
+    free = disk_free_mb()
+    return {"ok": True, "disk_low": free < config.MIN_FREE_DISK_MB}
+
+
+@app.get("/api/admin/backup")
+async def api_backup(admin: dict = Depends(require_admin)):
+    """Consistent snapshot of the SQLite database, safe to take while the app is running."""
+    fd, path = tempfile.mkstemp(suffix=".db")
+    import os
+    os.close(fd)
+    await run_in_threadpool(db.backup_to, path)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return FileResponse(path, filename=f"clipforge-{stamp}.db", media_type="application/octet-stream",
+                        background=BackgroundTask(lambda: Path(path).unlink(missing_ok=True)))
+
+
+@app.post("/api/admin/cleanup")
+async def api_cleanup(admin: dict = Depends(require_admin)):
+    """Run the periodic cleanup now (also runs automatically every CLEANUP_INTERVAL_MINUTES)."""
+    return await run_in_threadpool(runner.cleanup)
 
 
 @app.get("/api/branding")
@@ -554,6 +688,7 @@ async def api_job_create(request: Request, file: UploadFile | None = File(None),
         opts = clean_options(json.loads(options or "{}"), user)
     except json.JSONDecodeError:
         raise HTTPException(400, "options must be JSON.")
+    await run_in_threadpool(check_capacity, user)
     job_id = uuid.uuid4().hex[:16]
     jdir = job_dir(job_id)
     if file is not None and file.filename:
@@ -579,11 +714,22 @@ async def api_job_create(request: Request, file: UploadFile | None = File(None),
         except ValueError:
             shutil.rmtree(jdir, ignore_errors=True)
             raise HTTPException(413, f"File is larger than {config.MAX_UPLOAD_MB} MB.")
-        source_type, source = "upload", file.filename
+        # Reject anything that isn't real audio/video, or is too long, before it takes a queue slot.
+        try:
+            info = await run_in_threadpool(media.probe, dest)
+        except media.MediaError as e:
+            shutil.rmtree(jdir, ignore_errors=True)
+            raise HTTPException(400, str(e) if "supported" in str(e) else
+                                "This file couldn't be read as video or audio.")
+        if info["duration"] > config.MAX_VIDEO_SECONDS + 5:
+            shutil.rmtree(jdir, ignore_errors=True)
+            raise HTTPException(400, f"This video is {info['duration'] / 60:.0f} minutes long; the limit is "
+                                     f"{config.MAX_VIDEO_SECONDS // 60} minutes.")
+        source_type, source = "upload", Path(file.filename).name[:200]
         job_title = title.strip() or Path(file.filename).stem
     elif url.strip():
         try:
-            source = ingest.validate_url(url)
+            source = await run_in_threadpool(ingest.validate_url, url)
         except ValueError as e:
             raise HTTPException(400, str(e))
         source_type, job_title = "url", title.strip() or source
@@ -617,6 +763,11 @@ async def api_job_reanalyze(job_id: str, request: Request, user: dict = Depends(
     job = own_job(job_id, user)
     if job["status"] in ("queued", "running"):
         raise HTTPException(409, "This job is already in progress.")
+    await run_in_threadpool(check_capacity, user, False)
+    if not user["is_admin"] and not auth.limiter.allow(f"reanalyze:{user['id']}", config.USER_JOBS_PER_DAY, 86400):
+        raise HTTPException(429, f"Limit reached ({config.USER_JOBS_PER_DAY} re-runs per 24 hours).")
+    if job["source_type"] == "upload" and find_source(job_id) is None:
+        raise HTTPException(409, "The source video is no longer stored, so this project can't be processed again.")
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
     merged = {**json.loads(job["options"] or "{}"), **(body.get("options") or {})}
     db.execute("UPDATE jobs SET status = 'queued', stage = 'Waiting in queue', progress = 0, error = NULL, "
@@ -708,8 +859,11 @@ async def api_clip_add(job_id: str, request: Request, user: dict = Depends(requi
     job = own_job(job_id, user)
     if job["status"] not in ("done", "failed") or not (job_dir(job_id) / "transcript.json").exists():
         raise HTTPException(409, "Wait for the job to finish first.")
+    if find_source(job_id) is None:
+        raise HTTPException(409, "The source video is no longer stored, so new clips can't be made.")
     body = await request.json()
     start, end = _bounds(body, job)
+    check_render_rate(user)
     idx = (db.one("SELECT MAX(idx) AS m FROM clips WHERE job_id = ?", (job_id,))["m"] or 0) + 1
     cid = uuid.uuid4().hex[:12]
     db.execute("INSERT INTO clips(id, job_id, idx, start, \"end\", title, score, template_id, status, created_at, "
@@ -748,6 +902,8 @@ async def api_clip_update(clip_id: str, request: Request, user: dict = Depends(r
         or bool(body.get("rerender"))
     if needs_render and clip["status"] == "rendering":
         raise HTTPException(409, "This clip is rendering right now.")
+    if needs_render:
+        check_render_rate(user)
     db.execute("UPDATE clips SET title = ?, hashtags = ?, start = ?, \"end\" = ?, template_id = ?, status = ?, "
                "updated_at = ? WHERE id = ?",
                (title, json.dumps([str(h)[:40] for h in hashtags][:15], ensure_ascii=False), start, end,

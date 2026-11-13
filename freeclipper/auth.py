@@ -85,3 +85,28 @@ class LoginThrottle:
 
 
 throttle = LoginThrottle()
+
+
+class RateLimiter:
+    """Sliding-window counter per key (in memory; resets on restart, which errs on the permissive side
+    only for in-flight windows). Durable limits such as jobs per day are counted from the database."""
+
+    def __init__(self):
+        self._hits: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key: str, limit: int, window_seconds: int) -> bool:
+        now = time.time()
+        with self._lock:
+            recent = [t for t in self._hits.get(key, []) if t > now - window_seconds]
+            if len(recent) >= limit:
+                self._hits[key] = recent
+                return False
+            recent.append(now)
+            self._hits[key] = recent
+            if len(self._hits) > 50_000:  # bound memory under abuse
+                self._hits = {k: v for k, v in self._hits.items() if v and v[-1] > now - 86400}
+            return True
+
+
+limiter = RateLimiter()

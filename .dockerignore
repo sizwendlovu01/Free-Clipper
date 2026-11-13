@@ -15,3 +15,7 @@ data-*
 .vscode
 .idea
 .vercel
+tests
+*.md
+deploy
+docker-compose.yml
