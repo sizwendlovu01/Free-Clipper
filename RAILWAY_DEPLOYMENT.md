@@ -258,6 +258,7 @@ volume deletes its backups.
 
 | Symptom | Cause and fix |
 |---|---|
+| "The Dockerfile failed validation" within seconds | Railway rejects Dockerfiles that declare a `VOLUME` (fixed in this repo; storage is attached in the dashboard instead). Also make sure the service has no `RAILWAY_DOCKERFILE_PATH` variable pointing at another file such as `docker-compose.yml`. |
 | Build fails at `pip install` | A package version changed upstream. The pinned `constraints.txt` prevents this; if you edited `requirements.txt`, regenerate constraints (section 11). |
 | Deployment never becomes healthy | Open Deploy Logs. `ffmpeg/ffprobe not found` means the image is wrong; `PermissionError` on `/data` means the volume isn't mounted at `/data`, or `STORAGE_ROOT` points elsewhere. |
 | Everyone is signed out after each deploy | `SECRET_KEY` isn't set (and there's no volume to store a generated one). Set it. |
