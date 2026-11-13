@@ -281,7 +281,8 @@ def clean_options(raw: dict, user: dict) -> dict:
 # ---------------- pages ----------------
 
 def page(request: Request, name: str, user: dict | None, **ctx):
-    return templates.TemplateResponse(request, name, {"brand": brand(), "user": user, **ctx})
+    return templates.TemplateResponse(
+        request, name, {"brand": brand(), "user": user, "allow_signup": config.ALLOW_SIGNUP, **ctx})
 
 
 def page_user(request: Request) -> dict | RedirectResponse:
@@ -293,9 +294,12 @@ def page_user(request: Request) -> dict | RedirectResponse:
 
 @app.get("/")
 def dashboard(request: Request):
-    user = page_user(request)
-    if isinstance(user, Response):
-        return user
+    """Signed-in users get their dashboard; visitors get the public landing page."""
+    if not db.one("SELECT id FROM users LIMIT 1"):
+        return RedirectResponse("/setup", 303)
+    user = current_user(request)
+    if not user:
+        return page(request, "landing.html", None)
     return page(request, "dashboard.html", user, aspects=list(ASPECTS), whisper_models=config.WHISPER_MODELS,
                 default_model=config.WHISPER_MODEL, max_upload_mb=config.MAX_UPLOAD_MB,
                 max_video_minutes=config.MAX_VIDEO_SECONDS // 60, max_clips=config.MAX_CLIPS_PER_JOB)
@@ -338,7 +342,18 @@ def settings_page(request: Request):
 def login_page(request: Request):
     if not db.one("SELECT id FROM users LIMIT 1"):
         return RedirectResponse("/setup", 303)
-    return page(request, "login.html", None, allow_signup=config.ALLOW_SIGNUP)
+    if current_user(request):
+        return RedirectResponse("/", 303)
+    return page(request, "login.html", None)
+
+
+@app.get("/signup")
+def signup_page(request: Request):
+    if not db.one("SELECT id FROM users LIMIT 1"):
+        return RedirectResponse("/setup", 303)
+    if current_user(request):
+        return RedirectResponse("/", 303)
+    return page(request, "signup.html", None)
 
 
 @app.get("/setup")
@@ -351,7 +366,7 @@ def setup_page(request: Request):
 @app.post("/logout")
 def logout(request: Request):
     request.session.clear()
-    return RedirectResponse("/login", 303)
+    return RedirectResponse("/", 303)
 
 
 # ---------------- auth API ----------------

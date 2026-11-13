@@ -105,6 +105,21 @@ document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click",
   document.getElementById("tab-link").classList.toggle("hidden", mode !== "link");
 }));
 
+// A link (or upload intent) entered on the landing page before signing in.
+try {
+  const pendingUrl = sessionStorage.getItem("cf_pending_url");
+  const pendingUpload = sessionStorage.getItem("cf_pending_upload");
+  sessionStorage.removeItem("cf_pending_url");
+  sessionStorage.removeItem("cf_pending_upload");
+  if (pendingUrl) {
+    document.querySelector('[data-tab="link"]').click();
+    document.getElementById("url").value = pendingUrl;
+    toast("Your link is ready. Pick your settings and click Find clips.");
+  } else if (pendingUpload) {
+    toast("Choose a video file to upload.");
+  }
+} catch (_) { /* storage unavailable */ }
+
 const fileInput = document.getElementById("file"), drop = document.getElementById("drop");
 drop.addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => showPicked());

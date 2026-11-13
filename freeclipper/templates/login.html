@@ -1,33 +1,62 @@
-{% extends "base.html" %}
+{% extends "public_base.html" %}
 {% block title %}Sign in - {{ brand.app_name }}{% endblock %}
-{% block content %}
-<div class="auth card">
-  <div class="row" style="margin-bottom:16px">
-    {% if brand.has_logo %}<img src="/branding/logo.png" alt="" style="height:32px">{% endif %}
-    <h1 style="margin:0">{{ brand.app_name }}</h1>
-  </div>
-  <form id="f">
-    <div class="field"><label for="u">Username</label><input id="u" type="text" autocomplete="username" required autofocus></div>
-    <div class="field"><label for="p">Password</label><input id="p" type="password" autocomplete="current-password" required></div>
-    <div class="row">
-      <button class="primary" type="submit">Sign in</button>
-      {% if allow_signup %}<button type="button" id="signup">Create account</button>{% endif %}
+{% block body_class %}auth-page{% endblock %}
+{% block announce %}{% endblock %}
+{% block main %}
+<main id="main">
+  <div class="auth-card">
+    <h1>Welcome back</h1>
+    <p class="lede">Sign in to your {{ brand.app_name }} account.</p>
+    <div class="alert err" id="err" role="alert"></div>
+    <div class="alert info" id="info" role="status"></div>
+    <form id="f" novalidate>
+      <div class="field"><label for="u">Username</label>
+        <input id="u" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></div>
+      <div class="field"><label for="p">Password</label>
+        <input id="p" name="password" type="password" autocomplete="current-password" required></div>
+      <button class="btn white lg" type="submit" id="go">Sign in</button>
+    </form>
+    <div class="switch">
+      {% if allow_signup %}New to {{ brand.app_name }}? <a href="/signup">Create a free account</a>
+      {% else %}Need an account? Ask the administrator to create one for you.{% endif %}
     </div>
-  </form>
-</div>
+  </div>
+</main>
 {% endblock %}
+{% block footer %}<div class="auth-foot">&copy; {{ brand.app_name }}</div>{% endblock %}
 {% block scripts %}
 <script>
-const creds = () => ({ username: u.value, password: p.value });
-f.addEventListener("submit", async e => {
-  e.preventDefault();
-  try { await api("/api/login", { method: "POST", body: creds() }); location.href = "/"; }
-  catch (err) { toast(err.message, true); }
-});
-const su = document.getElementById("signup");
-if (su) su.addEventListener("click", async () => {
-  try { await api("/api/signup", { method: "POST", body: creds() }); location.href = "/"; }
-  catch (err) { toast(err.message, true); }
-});
+(function () {
+  const f = document.getElementById("f"), u = document.getElementById("u"), p = document.getElementById("p");
+  const err = document.getElementById("err"), go = document.getElementById("go");
+  try {
+    if (sessionStorage.getItem("cf_pending_url")) {
+      const info = document.getElementById("info");
+      info.textContent = "Sign in and your link will be ready on your dashboard.";
+      info.classList.add("show");
+    }
+  } catch (_) {}
+  const fail = (msg, field) => {
+    err.textContent = msg; err.classList.add("show");
+    [u, p].forEach(x => x.removeAttribute("aria-invalid"));
+    if (field) { field.setAttribute("aria-invalid", "true"); field.focus(); }
+  };
+  f.addEventListener("submit", async e => {
+    e.preventDefault();
+    if (!u.value.trim()) return fail("Enter your username.", u);
+    if (!p.value) return fail("Enter your password.", p);
+    go.disabled = true; go.textContent = "Signing in…";
+    try {
+      const res = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: u.value.trim(), password: p.value }) });
+      if (res.ok) { location.href = "/"; return; }
+      const data = await res.json().catch(() => ({}));
+      fail(data.detail || "Sign-in failed. Please try again.", res.status === 401 ? p : null);
+    } catch (_) {
+      fail("Can't reach the server. Check your connection and try again.");
+    }
+    go.disabled = false; go.textContent = "Sign in";
+  });
+})();
 </script>
 {% endblock %}

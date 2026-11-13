@@ -154,7 +154,12 @@ def main() -> int:
     check("GET /health", r.status_code == 200 and r.json().get("ok") is True, r.text[:100])
     check("security headers", r.headers.get("x-content-type-options") == "nosniff"
           and r.headers.get("x-frame-options") == "DENY")
-    check("pages require sign-in", admin.get("/").status_code in (302, 303, 307))
+    r = admin.get("/")
+    check("visitors see the landing page", r.status_code in (200, 303) and
+          (r.status_code == 303 or ('class="hero"' in r.text and "/login" in r.text)))
+    check("pages require sign-in", admin.get("/clips").status_code in (302, 303, 307))
+    check("sign-in and sign-up pages load", admin.get("/login").status_code in (200, 303)
+          and admin.get("/signup").status_code in (200, 303))
     check("API requires sign-in", admin.get("/api/jobs").status_code == 401)
 
     # ---- auth ----

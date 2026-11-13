@@ -1,0 +1,75 @@
+{% extends "public_base.html" %}
+{% block title %}Create account - {{ brand.app_name }}{% endblock %}
+{% block body_class %}auth-page{% endblock %}
+{% block announce %}{% endblock %}
+{% block main %}
+<main id="main">
+  <div class="auth-card">
+    {% if allow_signup %}
+    <h1>Create your account</h1>
+    <p class="lede">Free to start. No watermarks on your clips.</p>
+    <div class="alert err" id="err" role="alert"></div>
+    <div class="alert info" id="info" role="status"></div>
+    <form id="f" novalidate>
+      <div class="field"><label for="u">Username</label>
+        <input id="u" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false"
+               minlength="3" maxlength="40" pattern="[A-Za-z0-9._\-]{3,40}" required autofocus aria-describedby="u-hint">
+        <div class="hint" id="u-hint">3-40 characters: letters, numbers, dot, dash or underscore.</div></div>
+      <div class="field"><label for="p">Password</label>
+        <input id="p" name="password" type="password" autocomplete="new-password" minlength="8" required aria-describedby="p-hint">
+        <div class="hint" id="p-hint">At least 8 characters.</div></div>
+      <div class="field"><label for="p2">Confirm password</label>
+        <input id="p2" name="confirm" type="password" autocomplete="new-password" minlength="8" required></div>
+      <button class="btn white lg" type="submit" id="go">Create account</button>
+    </form>
+    <div class="switch">Already have an account? <a href="/login">Sign in</a></div>
+    {% else %}
+    <h1>Sign-ups are closed</h1>
+    <p class="lede">New accounts are created by the administrator right now.</p>
+    <a class="btn white lg" href="/login">Sign in</a>
+    {% endif %}
+  </div>
+</main>
+{% endblock %}
+{% block footer %}<div class="auth-foot">&copy; {{ brand.app_name }}</div>{% endblock %}
+{% block scripts %}
+{% if allow_signup %}
+<script>
+(function () {
+  const f = document.getElementById("f"), u = document.getElementById("u");
+  const p = document.getElementById("p"), p2 = document.getElementById("p2");
+  const err = document.getElementById("err"), go = document.getElementById("go");
+  try {
+    if (sessionStorage.getItem("cf_pending_url") || sessionStorage.getItem("cf_pending_upload")) {
+      const info = document.getElementById("info");
+      info.textContent = "Create your account and you'll go straight to making clips.";
+      info.classList.add("show");
+    }
+  } catch (_) {}
+  const fail = (msg, field) => {
+    err.textContent = msg; err.classList.add("show");
+    [u, p, p2].forEach(x => x.removeAttribute("aria-invalid"));
+    if (field) { field.setAttribute("aria-invalid", "true"); field.focus(); }
+  };
+  f.addEventListener("submit", async e => {
+    e.preventDefault();
+    const name = u.value.trim();
+    if (!/^[A-Za-z0-9._-]{3,40}$/.test(name)) return fail("Usernames are 3-40 characters: letters, numbers, dot, dash or underscore.", u);
+    if (p.value.length < 8) return fail("Use a password of at least 8 characters.", p);
+    if (p.value !== p2.value) return fail("The passwords don't match.", p2);
+    go.disabled = true; go.textContent = "Creating account…";
+    try {
+      const res = await fetch("/api/signup", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: name, password: p.value }) });
+      if (res.ok) { location.href = "/"; return; }
+      const data = await res.json().catch(() => ({}));
+      fail(data.detail || "Couldn't create the account. Please try again.", /username/i.test(data.detail || "") ? u : null);
+    } catch (_) {
+      fail("Can't reach the server. Check your connection and try again.");
+    }
+    go.disabled = false; go.textContent = "Create account";
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -1,24 +1,48 @@
-{% extends "base.html" %}
+{% extends "public_base.html" %}
 {% block title %}Set up - {{ brand.app_name }}{% endblock %}
-{% block content %}
-<div class="auth card">
-  <h1>Welcome</h1>
-  <p class="muted">Create the admin account. You can add more users later in Settings.</p>
-  <form id="f">
-    <div class="field"><label for="u">Username</label><input id="u" type="text" autocomplete="username" required autofocus></div>
-    <div class="field"><label for="p">Password (8+ characters)</label><input id="p" type="password" autocomplete="new-password" minlength="8" required></div>
-    {% if needs_token %}<div class="field"><label for="tk">Setup code (FC_SETUP_TOKEN)</label><input id="tk" type="password" autocomplete="off" required></div>{% endif %}
-    <button class="primary" type="submit">Create admin account</button>
-  </form>
-</div>
+{% block body_class %}auth-page{% endblock %}
+{% block announce %}{% endblock %}
+{% block main %}
+<main id="main">
+  <div class="auth-card">
+    <h1>Welcome</h1>
+    <p class="lede">Create the administrator account. You can add more users later in Settings.</p>
+    <div class="alert err" id="err" role="alert"></div>
+    <form id="f" novalidate>
+      <div class="field"><label for="u">Username</label>
+        <input id="u" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></div>
+      <div class="field"><label for="p">Password</label>
+        <input id="p" type="password" autocomplete="new-password" minlength="8" required>
+        <div class="hint">At least 8 characters.</div></div>
+      {% if needs_token %}<div class="field"><label for="tk">Setup code</label>
+        <input id="tk" type="password" autocomplete="off" required>
+        <div class="hint">The SETUP_TOKEN value from your server settings.</div></div>{% endif %}
+      <button class="btn white lg" type="submit" id="go">Create admin account</button>
+    </form>
+  </div>
+</main>
 {% endblock %}
+{% block footer %}<div class="auth-foot">&copy; {{ brand.app_name }}</div>{% endblock %}
 {% block scripts %}
 <script>
-f.addEventListener("submit", async e => {
-  e.preventDefault();
-  const tk = document.getElementById("tk");
-  try { await api("/api/setup", { method: "POST", body: { username: u.value, password: p.value, setup_token: tk ? tk.value : "" } }); location.href = "/"; }
-  catch (err) { toast(err.message, true); }
-});
+(function () {
+  const f = document.getElementById("f"), u = document.getElementById("u"), p = document.getElementById("p");
+  const tk = document.getElementById("tk"), err = document.getElementById("err"), go = document.getElementById("go");
+  const fail = (msg, field) => { err.textContent = msg; err.classList.add("show"); if (field) field.focus(); };
+  f.addEventListener("submit", async e => {
+    e.preventDefault();
+    if (!/^[A-Za-z0-9._-]{3,40}$/.test(u.value.trim())) return fail("Usernames are 3-40 characters: letters, numbers, dot, dash or underscore.", u);
+    if (p.value.length < 8) return fail("Use a password of at least 8 characters.", p);
+    go.disabled = true;
+    try {
+      const res = await fetch("/api/setup", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: u.value.trim(), password: p.value, setup_token: tk ? tk.value : "" }) });
+      if (res.ok) { location.href = "/"; return; }
+      const data = await res.json().catch(() => ({}));
+      fail(data.detail || "Setup failed.", res.status === 403 ? tk : null);
+    } catch (_) { fail("Can't reach the server."); }
+    go.disabled = false;
+  });
+})();
 </script>
 {% endblock %}
