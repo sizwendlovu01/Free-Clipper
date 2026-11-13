@@ -105,17 +105,16 @@ $("pick").onchange = () => fill(list.find(t => t.id === +$("pick").value));
 $("new").onclick = () => { const base = current; fill(null); $("name").value = (base ? base.name : "Style") + " copy";
   if (base) for (const f of FIELDS) { const el = $(f); if (el.type === "checkbox") el.checked = !!base.style[f]; else el.value = base.style[f]; }
   $("save").disabled = false; preview(); };
-$("save").onclick = async () => {
-  const body = { name: $("name").value, style: readStyle() };
-  try {
-    const t = current ? await api(`/api/templates/${current.id}`, { method: "PUT", body })
-                      : await api("/api/templates", { method: "POST", body });
-    toast("Saved"); reload(t.id);
-  } catch (e) { toast(e.message, true); }
-};
-$("del").onclick = async () => {
+$("save").onclick = e => withBusy(e.currentTarget, async () => {
+  if (!$("name").value.trim()) throw new Error("Give the style a name.");
+  const body = { name: $("name").value.trim(), style: readStyle() };
+  const t = current ? await api(`/api/templates/${current.id}`, { method: "PUT", body })
+                    : await api("/api/templates", { method: "POST", body });
+  toast("Saved"); await reload(t.id);
+}, "Saving…");
+$("del").onclick = e => {
   if (!current || !confirm(`Delete "${current.name}"?`)) return;
-  try { await api(`/api/templates/${current.id}`, { method: "DELETE" }); reload(); } catch (e) { toast(e.message, true); }
+  withBusy(e.currentTarget, async () => { await api(`/api/templates/${current.id}`, { method: "DELETE" }); toast("Style deleted"); await reload(); });
 };
 document.querySelectorAll("input,select").forEach(el => el.addEventListener("input", preview));
 window.addEventListener("resize", preview);

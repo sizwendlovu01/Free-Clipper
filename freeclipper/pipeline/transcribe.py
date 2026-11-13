@@ -14,6 +14,7 @@ from typing import Callable
 import numpy as np
 
 from .. import config
+from .captions import joiner
 
 _models: dict[tuple[str, str, str], object] = {}
 _lock = threading.Lock()
@@ -109,23 +110,34 @@ def from_json3(path: Path, language: str, duration: float | None) -> dict:
     all_words.sort(key=lambda w: w["start"])
     # Caption lines break wherever the line is full, mid-sentence. Rebuild phrases from speech pauses
     # (auto captions have little punctuation), so clip boundaries land where the speaker pauses.
-    segments: list[dict] = []
-    cur: list[dict] = []
-    for w in all_words:
-        if cur:
-            gap = w["start"] - cur[-1]["end"]
-            length = w["end"] - cur[0]["start"]
-            if gap >= 0.4 or (length > 8 and gap >= 0.2) or (length > 14 and gap >= 0.08) or length > 20:
-                segments.append(cur)
-                cur = []
-        cur.append(w)
-    if cur:
-        segments.append(cur)
-    segments = [{"start": ws[0]["start"], "end": ws[-1]["end"], "text": " ".join(w["word"] for w in ws),
-                 "words": ws} for ws in segments]
+    segments = phrases(all_words, joiner(language))
     total = float(duration or (segments[-1]["end"] if segments else 0))
     return {"language": language, "language_probability": 1.0, "duration": total,
             "model": CAPTIONS_MODEL, "task": "transcribe", "segments": segments}
+
+
+_SENTENCE_END = (".", "?", "!", "。", "？", "！", "…")
+
+
+def phrases(words: list[dict], sep: str = " ") -> list[dict]:
+    """Group timed words into sentence/phrase segments: split after sentence punctuation, at speech
+    pauses, and before a phrase grows too long. These are the boundaries clips start and end on."""
+    groups: list[list[dict]] = []
+    cur: list[dict] = []
+    for w in words:
+        if cur:
+            gap = w["start"] - cur[-1]["end"]
+            length = w["end"] - cur[0]["start"]
+            sentence_done = cur[-1]["word"].endswith(_SENTENCE_END) and cur[-1]["end"] - cur[0]["start"] >= 1.5
+            if (sentence_done or gap >= 0.4 or (length > 8 and gap >= 0.2) or (length > 14 and gap >= 0.08)
+                    or length > 20):
+                groups.append(cur)
+                cur = []
+        cur.append(w)
+    if cur:
+        groups.append(cur)
+    return [{"start": g[0]["start"], "end": g[-1]["end"], "text": sep.join(w["word"] for w in g).strip(),
+             "words": g} for g in groups]
 
 
 def transcribe(audio: Path, model_size: str, language: str | None, task: str,
@@ -170,6 +182,10 @@ def transcribe(audio: Path, model_size: str, language: str | None, task: str,
                                "transcription model or batch size (FC_WHISPER_BATCH_SIZE).") from exc
         raise
     out.sort(key=lambda s: s["start"])
+    # The batched pipeline returns ~30 s chunks; rebuild sentence/phrase segments from the word timings
+    # so clips can start and end on real sentence boundaries. Chunks without word timings are kept.
+    if out and all(s["words"] for s in out):
+        out = phrases([w for s in out for w in s["words"]], joiner(info.language))
     return {
         "language": info.language,
         "language_probability": round(float(info.language_probability or 0), 3),

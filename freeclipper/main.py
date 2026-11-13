@@ -59,7 +59,26 @@ app.mount("/static", StaticFiles(directory=config.PACKAGE_DIR / "static"), name=
 templates = Jinja2Templates(directory=config.PACKAGE_DIR / "templates")
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".flv", ".wmv", ".mpg", ".mpeg", ".ts",
-              ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"}
+              ".3gp", ".3g2", ".mts", ".m2ts", ".mxf", ".ogv", ".hevc",
+              ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".amr", ".wma"}
+# Phones sometimes send a file without an extension (or with a generic name); use its media type instead.
+MIME_EXTS = {"video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm", "video/x-matroska": ".mkv",
+             "video/3gpp": ".3gp", "video/3gpp2": ".3g2", "video/mp2t": ".ts", "video/x-msvideo": ".avi",
+             "audio/mpeg": ".mp3", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/aac": ".aac",
+             "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/ogg": ".ogg", "audio/webm": ".webm",
+             "audio/amr": ".amr", "audio/flac": ".flac"}
+
+
+def upload_extension(filename: str, content_type: str | None) -> str | None:
+    ext = Path(filename or "").suffix.lower()
+    if ext in VIDEO_EXTS:
+        return ext
+    ctype = (content_type or "").split(";")[0].strip().lower()
+    if ctype in MIME_EXTS:
+        return MIME_EXTS[ctype]
+    if ctype.startswith(("video/", "audio/")):
+        return ".mp4" if ctype.startswith("video/") else ".m4a"  # ffprobe checks the real content anyway
+    return None
 CLIP_FILES = {"clip.mp4": "video/mp4", "thumb.jpg": "image/jpeg", "captions.srt": "application/x-subrip",
               "captions.vtt": "text/vtt", "captions.ass": "text/plain", "meta.json": "application/json"}
 FILE_KEYS = {"clip.mp4": "video", "thumb.jpg": "thumb", "captions.srt": "srt", "captions.vtt": "vtt",
@@ -89,7 +108,11 @@ async def guard(request: Request, call_next):
     if request.method not in ("GET", "HEAD", "OPTIONS"):
         if "authorization" not in request.headers:
             origin = request.headers.get("origin") or request.headers.get("referer")
-            if origin and urlparse(origin).netloc != request.headers.get("host"):
+            # Behind a proxy (Railway) the public host can arrive as X-Forwarded-Host instead of Host.
+            # A browser can't forge either header on a cross-site request, so accepting both is safe.
+            allowed = {request.headers.get("host", "").lower()}
+            allowed.update(h.strip().lower() for h in request.headers.get("x-forwarded-host", "").split(",") if h.strip())
+            if origin and urlparse(origin).netloc.lower() not in allowed:
                 return JSONResponse({"detail": "Cross-site request blocked."}, status_code=403)
         length = request.headers.get("content-length")
         # Video uploads: MAX_UPLOAD_SIZE_MB. Everything else (logos, fonts, JSON): 50 MB.
@@ -280,9 +303,26 @@ def clean_options(raw: dict, user: dict) -> dict:
 
 # ---------------- pages ----------------
 
+def _asset_version() -> str:
+    """Fingerprint of the static files, appended to their URLs so browsers fetch new CSS/JS right after a
+    deploy instead of reusing stale cached copies."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    for p in sorted((config.PACKAGE_DIR / "static").glob("*")):
+        if p.is_file():
+            digest.update(p.name.encode())
+            digest.update(p.read_bytes())
+    return digest.hexdigest()[:10]
+
+
+ASSET_VERSION = _asset_version()
+
+
 def page(request: Request, name: str, user: dict | None, **ctx):
     return templates.TemplateResponse(
-        request, name, {"brand": brand(), "user": user, "allow_signup": config.ALLOW_SIGNUP, **ctx})
+        request, name, {"brand": brand(), "user": user, "allow_signup": config.ALLOW_SIGNUP,
+                        "v": ASSET_VERSION, **ctx})
 
 
 def page_user(request: Request) -> dict | RedirectResponse:
@@ -501,7 +541,8 @@ def api_system(user: dict = Depends(require_user)):
     }
     if user["is_admin"]:  # server details only for admins
         info.update(ollama_url=config.OLLAMA_URL, data_dir=str(config.DATA_DIR), disk_free_mb=disk_free_mb(),
-                    render_workers=config.RENDER_WORKERS)
+                    render_workers=config.RENDER_WORKERS,
+                    youtube_cookies=config.YTDLP_COOKIES_FILE.is_file(), youtube_proxy=bool(config.YTDLP_PROXY))
     return info
 
 
@@ -539,6 +580,37 @@ async def api_backup(admin: dict = Depends(require_admin)):
 async def api_cleanup(admin: dict = Depends(require_admin)):
     """Run the periodic cleanup now (also runs automatically every CLEANUP_INTERVAL_MINUTES)."""
     return await run_in_threadpool(runner.cleanup)
+
+
+@app.post("/api/admin/youtube-cookies")
+async def api_youtube_cookies(file: UploadFile = File(...), admin: dict = Depends(require_admin)):
+    """Store a Netscape-format cookies.txt for YouTube downloads. Never served back to anyone."""
+    data = await file.read(1024 * 1024 + 1)
+    if len(data) > 1024 * 1024:
+        raise HTTPException(400, "That file is too large for a cookies.txt file.")
+    text = data.decode("utf-8", errors="replace")
+    rows = [line for line in text.splitlines() if line.strip() and not line.startswith("#")]
+    if not rows or not all(len(line.split("\t")) >= 7 for line in rows[:20]):
+        raise HTTPException(400, "This isn't a cookies.txt file. Export one in Netscape format with a "
+                                 "'Get cookies.txt' browser extension while signed in to YouTube.")
+    if not any("youtube.com" in line or "google.com" in line for line in rows):
+        raise HTTPException(400, "The file has no YouTube or Google cookies. Export it while on youtube.com.")
+    target = config.YTDLP_COOKIES_FILE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass
+    tmp.replace(target)
+    return {"ok": True, "cookies": len(rows)}
+
+
+@app.delete("/api/admin/youtube-cookies")
+def api_youtube_cookies_delete(admin: dict = Depends(require_admin)):
+    config.YTDLP_COOKIES_FILE.unlink(missing_ok=True)
+    return {"ok": True}
 
 
 @app.get("/api/branding")
@@ -707,9 +779,10 @@ async def api_job_create(request: Request, file: UploadFile | None = File(None),
     job_id = uuid.uuid4().hex[:16]
     jdir = job_dir(job_id)
     if file is not None and file.filename:
-        ext = Path(file.filename).suffix.lower()
-        if ext not in VIDEO_EXTS:
-            raise HTTPException(400, f"Unsupported file type {ext or '(none)'}.")
+        ext = upload_extension(file.filename, file.content_type)
+        if not ext:
+            raise HTTPException(400, f"Unsupported file type {Path(file.filename).suffix or '(none)'}. "
+                                     "Upload a video or audio file such as MP4, MOV, WEBM or MP3.")
         jdir.mkdir(parents=True, exist_ok=True)
         dest = jdir / f"source{ext}"
         limit = config.MAX_UPLOAD_MB * 1024 * 1024

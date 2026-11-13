@@ -226,18 +226,58 @@ def _loudness_per_second(audio: Path | None) -> np.ndarray | None:
         return None
 
 
+def _select(candidates: list[dict], count: int, avoid: list[dict]) -> list[dict]:
+    """Choose up to `count` non-overlapping windows with the highest total score (weighted interval
+    scheduling). Unlike picking the single best window repeatedly, this finds the requested number of
+    clips whenever the timeline allows it, using shorter windows where needed."""
+    import bisect
+
+    cands = [c for c in candidates
+             if not any(c["start"] < a["end"] - 0.6 and c["end"] > a["start"] + 0.6 for a in avoid)]
+    if not cands or count <= 0:
+        return []
+    cands.sort(key=lambda c: c["end"])
+    low = min(c["raw"] for c in cands)
+    weight = [c["raw"] - low + 1.0 for c in cands]  # positive, so an extra clip never lowers the total
+    ends = [c["end"] for c in cands]
+    neg = float("-inf")
+    n = len(cands)
+    prev = [bisect.bisect_right(ends, cands[j]["start"] + 0.01, 0, j) for j in range(n)]
+    dp = [[0.0] + [neg] * count for _ in range(n + 1)]
+    take = [[False] * (count + 1) for _ in range(n + 1)]
+    for j in range(1, n + 1):
+        p, w = prev[j - 1], weight[j - 1]
+        row, before = dp[j], dp[j - 1]
+        for m in range(1, count + 1):
+            skip = before[m]
+            pick = dp[p][m - 1] + w if dp[p][m - 1] != neg else neg
+            if pick > skip:
+                row[m], take[j][m] = pick, True
+            else:
+                row[m] = skip
+    m = max(k for k in range(count + 1) if dp[n][k] != neg)
+    chosen, j = [], n
+    while m > 0 and j > 0:
+        if take[j][m]:
+            chosen.append(cands[j - 1])
+            j, m = prev[j - 1], m - 1
+        else:
+            j -= 1
+    return sorted(chosen, key=lambda c: c["raw"], reverse=True)
+
+
 def _heuristic(segments: list[dict], count: int, min_len: int, max_len: int, audio: Path | None,
-               duration: float) -> list[dict]:
+               duration: float, avoid: list[dict] | None = None) -> list[dict]:
     loud = _loudness_per_second(audio)
     candidates = []
     if not segments:
-        # No speech: fall back to the loudest windows.
-        step = max_len
-        for s in np.arange(0, max(0.0, duration - min_len), step / 2):
-            e = min(duration, s + max_len)
-            score = float(loud[int(s):int(e)].mean()) if loud is not None and int(e) > int(s) else 0.0
-            candidates.append({"start": float(s), "end": float(e), "raw": score, "title": "Highlight",
-                               "hook": "", "reason": "Loud moment (no speech found)."})
+        # No speech: fall back to the loudest windows, in a few lengths so the requested count can fit.
+        for length in sorted({min_len, (min_len + max_len) // 2, max_len}):
+            for s in np.arange(0, max(0.0, duration - length) + 0.01, max(1.0, min_len / 2)):
+                e = min(duration, s + length)
+                score = float(loud[int(s):int(e)].mean()) if loud is not None and int(e) > int(s) else 0.0
+                candidates.append({"start": float(s), "end": float(e), "raw": score, "title": "Highlight",
+                                   "hook": "", "reason": "Loud moment (no speech found)."})
     for i, first in enumerate(segments):
         text_parts, words = [], 0
         for j in range(i, len(segments)):
@@ -263,13 +303,7 @@ def _heuristic(segments: list[dict], count: int, min_len: int, max_len: int, aud
             title = " ".join(first["text"].split()[:9]).rstrip(",.;:")
             candidates.append({"start": first["start"], "end": seg["end"], "raw": raw, "title": title,
                                "hook": first["text"][:140], "reason": "Dense, energetic speech with a clear opening."})
-    candidates.sort(key=lambda c: c["raw"], reverse=True)
-    picked: list[dict] = []
-    for c in candidates:
-        if all(c["end"] <= p["start"] or c["start"] >= p["end"] for p in picked):
-            picked.append(c)
-        if len(picked) >= count:
-            break
+    picked = _select(candidates, count, avoid or [])
     if picked:
         hi = max(p["raw"] for p in picked)
         lo = min(p["raw"] for p in picked)
@@ -341,13 +375,16 @@ def _snap(clips: list[dict], segments: list[dict], duration: float, min_len: int
     cleaned.sort(key=lambda c: c["score"], reverse=True)
     final: list[dict] = []
     for c in cleaned:
-        overlap = any(min(c["end"], f["end"]) - max(c["start"], f["start"]) > 0.3 * (c["end"] - c["start"])
-                      for f in final)
-        if not overlap:
+        if not any(_overlaps(c, f) for f in final):
             final.append(c)
         if len(final) >= count:
             break
     return final
+
+
+def _overlaps(a: dict, b: dict) -> bool:
+    """Clips may share only the ~0.5 s of padding added around their edges, never real content."""
+    return min(a["end"], b["end"]) - max(a["start"], b["start"]) > 0.6
 
 
 def find_highlights(transcript: dict, duration: float, count: int, min_len: int, max_len: int,
@@ -379,4 +416,23 @@ def find_highlights(transcript: dict, duration: float, count: int, min_len: int,
             note = "No speech found; picked the most energetic moments instead."
         used = "heuristic"
         raw = _heuristic(segments, count, min_len, max_len, audio, duration)
-    return _snap(raw, segments, duration, min_len, max_len, count), used, note
+    clips = _snap(raw, segments, duration, min_len, max_len, count)
+    if len(clips) < count:
+        # The AI (or a first pass) returned fewer distinct moments than requested: top up with the next
+        # best non-overlapping moments so the user gets the number they asked for whenever the video
+        # is long enough.
+        need = count - len(clips)
+        extra = _snap(_heuristic(segments, need, min_len, max_len, audio, duration, avoid=clips),
+                      segments, duration, min_len, max_len, need)
+        for c in extra:
+            if len(clips) >= count:
+                break
+            if not any(_overlaps(c, k) for k in clips):
+                clips.append(c)
+        clips.sort(key=lambda c: c["score"], reverse=True)
+    return clips, used, note
+
+
+def max_clips_possible(duration: float, min_len: int) -> int:
+    """Upper bound on non-overlapping clips of at least min_len seconds."""
+    return max(1, int(duration // max(1, min_len)))

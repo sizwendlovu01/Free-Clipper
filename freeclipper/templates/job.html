@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card">
-  <div class="row" style="align-items:flex-start">
+  <div class="row job-head" style="align-items:flex-start">
     <div style="min-width:0;flex:1">
       <h1 id="title" style="word-break:break-word">Loading...</h1>
       <div class="row small muted" id="meta"></div>
@@ -63,7 +63,7 @@ async function load() {
   clearTimeout(timer);
   try { job = await api(`/api/jobs/${JOB}`); }
   catch (e) {
-    if (e instanceof TypeError) { timer = setTimeout(load, 5000); return; }  // network blip: retry
+    if (e.network) { timer = setTimeout(load, 5000); return; }  // network blip: retry
     toast(e.message, true); return;
   }
   render();
@@ -82,10 +82,10 @@ function render() {
     .filter(Boolean).join(" · ");
   const busy = ["queued", "running"].includes(job.status);
   document.getElementById("actions").innerHTML = `
-    ${busy ? '<button class="danger" onclick="cancelJob()">Cancel</button>' : ""}
+    ${busy ? '<button class="danger" onclick="cancelJob(this)">Cancel</button>' : ""}
     ${job.clips_done ? `<a class="btn primary" href="/api/jobs/${JOB}/export.zip">Download all (.zip)</a>` : ""}
-    ${["failed", "cancelled"].includes(job.status) ? '<button onclick="retry()">Retry</button>' : ""}
-    ${job.status !== "running" ? '<button class="danger" onclick="delJob()">Delete</button>' : ""}`;
+    ${["failed", "cancelled"].includes(job.status) ? '<button onclick="retry(this)">Retry</button>' : ""}
+    ${job.status !== "running" ? '<button class="danger" onclick="delJob(this)">Delete</button>' : ""}`;
   let status = "";
   if (busy) status = `<div class="small" style="margin-bottom:6px">${esc(job.stage)} · ${(job.progress * 100).toFixed(0)}%</div>
     <div class="progress"><div style="width:${(job.progress * 100).toFixed(1)}%"></div></div>`;
@@ -144,7 +144,7 @@ function clipCard(c, ratio) {
           <a class="btn sm" href="${c.files.vtt}&download=1">VTT</a>` : ""}
         <button class="sm" onclick="editClip('${c.id}')">Edit</button>
         <button class="sm" onclick="copyCaption('${c.id}')">Copy post text</button>
-        <button class="sm danger" onclick="delClip('${c.id}')">Delete</button>
+        <button class="sm danger" onclick="delClip('${c.id}', this)">Delete</button>
       </div>
     </div>`;
 }
@@ -163,27 +163,34 @@ function editClip(id) {
     <div class="field"><label>Hashtags (space separated)</label><input id="eh" type="text" value="${esc(c.hashtags.join(" "))}"></div>
     <div class="row"><button class="primary" id="esave">Save</button><button id="erender">Save and re-render</button><button id="ecancel">Close</button></div>
     <p class="small muted">Changing the times or style re-renders the clip.</p>`);
-  const save = async (rerender) => {
-    const body = { title: m.querySelector("#et").value, start: parseTime(m.querySelector("#es").value),
-      end: parseTime(m.querySelector("#ee").value), template_id: m.querySelector("#etpl").value || null,
+  const save = (rerender, btn) => withBusy(btn, async () => {
+    const start = parseTime(m.querySelector("#es").value), end = parseTime(m.querySelector("#ee").value);
+    if (isNaN(start) || isNaN(end) || end <= start) throw new Error("Enter a start and end like 1:05.5, with the end after the start.");
+    const body = { title: m.querySelector("#et").value, start, end, template_id: m.querySelector("#etpl").value || null,
       hashtags: m.querySelector("#eh").value.split(/\s+/).filter(Boolean), rerender };
-    try { await api(`/api/clips/${id}`, { method: "PATCH", body }); m.remove(); load(); }
-    catch (e) { toast(e.message, true); }
-  };
-  m.querySelector("#esave").onclick = () => save(false);
-  m.querySelector("#erender").onclick = () => save(true);
+    const updated = await api(`/api/clips/${id}`, { method: "PATCH", body });
+    m.remove();
+    toast(updated.status === "queued" ? "Saved. Re-rendering the clip…" : "Saved");
+    load();
+  }, "Saving…");
+  m.querySelector("#esave").onclick = e => save(false, e.currentTarget);
+  m.querySelector("#erender").onclick = e => save(true, e.currentTarget);
   m.querySelector("#ecancel").onclick = () => m.remove();
 }
 
-async function delClip(id) {
+function delClip(id, btn) {
   if (!confirm("Delete this clip?")) return;
-  try { await api(`/api/clips/${id}`, { method: "DELETE" }); load(); } catch (e) { toast(e.message, true); }
+  withBusy(btn, async () => { await api(`/api/clips/${id}`, { method: "DELETE" }); toast("Clip deleted"); load(); });
 }
-async function cancelJob() { await api(`/api/jobs/${JOB}/cancel`, { method: "POST" }); load(); }
-async function retry() { try { await api(`/api/jobs/${JOB}/reanalyze`, { method: "POST", body: {} }); load(); } catch (e) { toast(e.message, true); } }
-async function delJob() {
+function cancelJob(btn) {
+  withBusy(btn, async () => { await api(`/api/jobs/${JOB}/cancel`, { method: "POST" }); toast("Cancelling…"); load(); }, "Cancelling…");
+}
+function retry(btn) {
+  withBusy(btn, async () => { await api(`/api/jobs/${JOB}/reanalyze`, { method: "POST", body: {} }); toast("Queued again"); load(); }, "Queuing…");
+}
+function delJob(btn) {
   if (!confirm("Delete this project, its source video and all clips?")) return;
-  try { await api(`/api/jobs/${JOB}`, { method: "DELETE" }); location.href = "/"; } catch (e) { toast(e.message, true); }
+  withBusy(btn, async () => { await api(`/api/jobs/${JOB}`, { method: "DELETE" }); location.href = "/"; }, "Deleting…");
 }
 
 async function loadTranscript() {
@@ -204,20 +211,26 @@ async function loadTranscript() {
   } catch { transcriptLoaded = false; }
 }
 
-document.getElementById("addclip").onclick = async () => {
-  const body = { start: parseTime(document.getElementById("cs").value), end: parseTime(document.getElementById("ce").value),
-    title: document.getElementById("ct").value || "Custom clip" };
-  try { await api(`/api/jobs/${JOB}/clips`, { method: "POST", body }); toast("Clip queued"); load(); }
-  catch (e) { toast(e.message, true); }
-};
+document.getElementById("addclip").onclick = e => withBusy(e.currentTarget, async () => {
+  const start = parseTime(document.getElementById("cs").value), end = parseTime(document.getElementById("ce").value);
+  if (isNaN(start) || isNaN(end) || end <= start) throw new Error("Enter a start and end like 1:05, with the end after the start.");
+  await api(`/api/jobs/${JOB}/clips`, { method: "POST", body: { start, end, title: document.getElementById("ct").value || "Custom clip" } });
+  toast("Clip queued");
+  ["cs", "ce", "ct"].forEach(id => document.getElementById(id).value = "");
+  load();
+}, "Adding…");
 document.querySelectorAll("#rn,#rmin,#rmax,#raspect,#rreframe,#rprompt").forEach(el => el.addEventListener("input", () => el.dataset.touched = 1));
-document.getElementById("reanalyze").onclick = async () => {
+document.getElementById("reanalyze").onclick = e => {
   if (job.clips.length && !confirm("This replaces the current clips. Continue?")) return;
   const v = id => document.getElementById(id).value;
   const options = { max_clips: +v("rn"), min_len: +v("rmin"), max_len: +v("rmax"), aspect: v("raspect"),
     reframe: v("rreframe"), prompt: v("rprompt"), template_id: v("rtpl") };
-  try { await api(`/api/jobs/${JOB}/reanalyze`, { method: "POST", body: { options } }); load(); }
-  catch (e) { toast(e.message, true); }
+  withBusy(e.currentTarget, async () => {
+    await api(`/api/jobs/${JOB}/reanalyze`, { method: "POST", body: { options } });
+    toast("Finding clips again…");
+    document.querySelectorAll("[data-touched]").forEach(el => delete el.dataset.touched);
+    load();
+  }, "Queuing…");
 };
 
 (async () => {

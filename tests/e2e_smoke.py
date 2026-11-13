@@ -210,6 +210,11 @@ def main() -> int:
     job = wait_job(admin, r.json()["id"]) if r.status_code == 200 else {}
     if check("upload job finished", job.get("status") == "done", f"{job.get('stage')} {job.get('error') or ''}"):
         check("transcription produced a language", bool(job.get("language")), job.get("language") or "")
+        done_clips = [x for x in job["clips"] if x["status"] == "done"]
+        check("exactly the requested number of clips", len(done_clips) == opts["max_clips"],
+              f"{len(done_clips)} of {opts['max_clips']}")
+        check("clips don't overlap", all(min(a["end"], b["end"]) - max(a["start"], b["start"]) <= 0.6
+                                         for i, a in enumerate(done_clips) for b in done_clips[i + 1:]))
         test_exports(admin, job)
         check("other users can't read this project", user.get(f"/api/jobs/{job['id']}").status_code == 404)
         clip = job["clips"][0]

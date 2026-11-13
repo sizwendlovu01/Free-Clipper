@@ -6,7 +6,10 @@ while the full video keeps downloading in the background.
 from __future__ import annotations
 
 import ipaddress
+import shutil
 import socket
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
@@ -39,12 +42,32 @@ def validate_url(url: str) -> str:
     return url
 
 
+@contextmanager
+def _access_opts():
+    """yt-dlp options for getting past YouTube's bot check from cloud servers: a private copy of the
+    admin's cookies file (yt-dlp rewrites it, so parallel downloads must not share one) and a proxy."""
+    opts: dict = {}
+    copy = None
+    if config.YTDLP_PROXY:
+        opts["proxy"] = config.YTDLP_PROXY
+    if config.YTDLP_COOKIES_FILE.is_file():
+        copy = config.TEMP_DIR / f"cookies-{uuid.uuid4().hex}.txt"
+        shutil.copyfile(config.YTDLP_COOKIES_FILE, copy)
+        opts["cookiefile"] = str(copy)
+    try:
+        yield opts
+    finally:
+        if copy:
+            copy.unlink(missing_ok=True)
+
+
 def video_info(url: str) -> dict:
     """Metadata only (title, duration), without downloading media."""
     import yt_dlp
 
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True,
-                           "socket_timeout": 30, "extractor_retries": 3}) as ydl:
+    with _access_opts() as access, yt_dlp.YoutubeDL({
+            "quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True,
+            "socket_timeout": 30, "extractor_retries": 3, **access}) as ydl:
         info = ydl.extract_info(url, download=False)
     if info.get("_type") == "playlist":
         raise ValueError("Playlists are not supported; link to a single video.")
@@ -98,7 +121,7 @@ def _base_opts(progress: Callable[[float], None], should_stop: Callable[[], bool
 def _run(url: str, opts: dict, dest_dir: Path, stem: str) -> tuple[Path, str]:
     import yt_dlp
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
+    with _access_opts() as access, yt_dlp.YoutubeDL({**opts, **access}) as ydl:
         info = ydl.extract_info(url, download=True)
         if info.get("_type") == "playlist":
             raise ValueError("Playlists are not supported; link to a single video.")
@@ -137,7 +160,7 @@ def download_captions(url: str, dest_dir: Path, should_stop: Callable[[], bool])
         "subtitlesformat": "json3",
         "outtmpl": str(dest_dir / "captions.%(ext)s"),
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
+    with _access_opts() as access, yt_dlp.YoutubeDL({**opts, **access}) as ydl:
         info = ydl.extract_info(url, download=True)
     meta = {"title": info.get("title"), "duration": info.get("duration"), "language": info.get("language")}
     for lang, sub in (info.get("requested_subtitles") or {}).items():

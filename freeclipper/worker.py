@@ -75,8 +75,8 @@ def friendly_error(exc: BaseException) -> str:
     text = str(exc) or type(exc).__name__
     low = text.lower()
     if "sign in to confirm" in low or "not a bot" in low:
-        return ("YouTube asked for a sign-in check for this video. Try again later, download the video "
-                "yourself and upload the file, or try another link.")
+        return ("YouTube asked this server for a sign-in check. Upload the video file instead, or try again "
+                "later. (Admins: add YouTube cookies in Settings, or set YTDLP_PROXY, to fix this.)")
     if any(k in low for k in ("private video", "is unavailable", "video unavailable", "members-only",
                               "has been removed", "age-restricted", "not available in your country")):
         return "This video is private, removed, region-locked or otherwise restricted, so it can't be downloaded."
@@ -407,6 +407,11 @@ class Runner:
                 notes.append(note)
             if not found:
                 raise RuntimeError("No usable clips were found in this video.")
+            if len(found) < max_clips:
+                notes.append(
+                    f"You asked for {max_clips} clips; {len(found)} distinct, non-overlapping moments of at least "
+                    f"{int(opts.get('min_len', 20))} s fit in this {fmt_duration(duration)} video. Lower the minimum "
+                    "length or use a longer video to get more.")
             timings["highlights"] = time.monotonic() - t0
             self._check(job_id)
 

@@ -147,6 +147,11 @@ TEMP_FILE_MAX_AGE_HOURS = max(1, _int("TEMP_FILE_MAX_AGE_HOURS", default=6))
 # captions and transcripts are never deleted by cleanup; without the source, clips can't be re-rendered.
 SOURCE_RETENTION_DAYS = max(0, _int("SOURCE_RETENTION_DAYS", default=0))
 
+# YouTube sometimes asks cloud servers to "confirm you're not a bot". Two standard yt-dlp workarounds:
+# a cookies.txt exported from a signed-in browser (uploaded by an admin in Settings, or a path), and a proxy.
+YTDLP_COOKIES_FILE = _path("YTDLP_COOKIES_FILE", default=DATA_DIR / "youtube_cookies.txt")
+YTDLP_PROXY = _env("YTDLP_PROXY", default="") or ""
+
 FFMPEG = _env("FC_FFMPEG", default="ffmpeg")
 FFPROBE = _env("FC_FFPROBE", default="ffprobe")
 X264_PRESET = _env("FC_X264_PRESET", default="veryfast")

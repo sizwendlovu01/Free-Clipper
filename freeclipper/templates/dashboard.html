@@ -9,7 +9,7 @@
   <form id="newjob">
     <div id="tab-upload">
       <input id="file" type="file" accept="video/*,audio/*" class="hidden">
-      <div class="drop" id="drop">
+      <div class="drop" id="drop" role="button" tabindex="0" aria-label="Choose a video or audio file">
         <strong>Drop a video or audio file here</strong><br>
         <span class="small">or click to choose (up to {{ max_upload_mb }} MB and {{ max_video_minutes }} minutes)</span>
         <div id="picked" class="small" style="margin-top:8px;color:var(--text)"></div>
@@ -122,6 +122,7 @@ try {
 
 const fileInput = document.getElementById("file"), drop = document.getElementById("drop");
 drop.addEventListener("click", () => fileInput.click());
+drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); } });
 fileInput.addEventListener("change", () => showPicked());
 ["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
@@ -149,35 +150,53 @@ function options() {
     provider: v("provider"), captions: c("captions"), loudnorm: c("loudnorm"), translate: c("translate"), prompt: v("prompt") };
 }
 
+const MAX_UPLOAD_MB = {{ max_upload_mb }};
+let submitting = false;
 document.getElementById("newjob").addEventListener("submit", e => {
   e.preventDefault();
+  if (submitting) return;  // no double submissions
   const fd = new FormData();
   if (mode === "upload") {
-    if (!fileInput.files[0]) return toast("Choose a file first", true);
-    fd.append("file", fileInput.files[0]);
+    const f = fileInput.files[0];
+    if (!f) return toast("Choose a video or audio file first", true);
+    if (f.size > MAX_UPLOAD_MB * 1024 * 1024)
+      return toast(`This file is ${(f.size / 1048576).toFixed(0)} MB; the limit is ${MAX_UPLOAD_MB} MB.`, true);
+    if (f.size === 0) return toast("This file is empty.", true);
+    fd.append("file", f, f.name || "video.mp4");
   } else {
-    if (!document.getElementById("url").value.trim()) return toast("Paste a link first", true);
-    fd.append("url", document.getElementById("url").value.trim());
+    const url = document.getElementById("url").value.trim();
+    if (!url) return toast("Paste a link first", true);
+    if (!/^https?:\/\/\S+\.\S+/i.test(url)) return toast("Enter a full link that starts with https://", true);
+    fd.append("url", url);
   }
   fd.append("options", JSON.stringify(options()));
   const go = document.getElementById("go"), bar = document.getElementById("upbar"), txt = document.getElementById("uptext");
-  go.disabled = true; bar.classList.remove("hidden");
+  const label = go.textContent;
+  const finish = () => {
+    submitting = false; go.disabled = false; go.textContent = label;
+    bar.classList.add("hidden"); txt.textContent = "";
+  };
+  submitting = true; go.disabled = true; go.textContent = mode === "upload" ? "Uploading…" : "Starting…";
+  bar.classList.toggle("hidden", mode !== "upload"); bar.firstElementChild.style.width = "0%";
   const xhr = new XMLHttpRequest();
   xhr.open("POST", "/api/jobs");
   xhr.upload.onprogress = ev => {
     if (ev.lengthComputable) {
       const pct = ev.loaded / ev.total * 100;
       bar.firstElementChild.style.width = pct + "%";
-      txt.textContent = pct < 100 ? `Uploading ${pct.toFixed(0)}%` : "Saving...";
+      txt.textContent = pct < 100 ? `Uploading ${pct.toFixed(0)}%` : "Checking the video…";
     }
   };
   xhr.onload = () => {
-    go.disabled = false; bar.classList.add("hidden"); txt.textContent = "";
-    let data = {}; try { data = JSON.parse(xhr.responseText); } catch {}
-    if (xhr.status >= 200 && xhr.status < 300) { location.href = `/jobs/${data.id}`; }
-    else toast(data.detail || "Upload failed", true);
+    let data = {}; try { data = JSON.parse(xhr.responseText); } catch (_) {}
+    if (xhr.status >= 200 && xhr.status < 300 && data.id) { location.href = `/jobs/${data.id}`; return; }
+    finish();
+    if (xhr.status === 401) { location.href = "/login"; return; }
+    toast(data.detail || (xhr.status === 413 ? `The file is larger than ${MAX_UPLOAD_MB} MB.` :
+      xhr.status >= 500 ? "The server had a problem. Please try again." : "Upload failed. Please try again."), true);
   };
-  xhr.onerror = () => { go.disabled = false; bar.classList.add("hidden"); toast("Network error", true); };
+  xhr.onerror = () => { finish(); toast("Connection lost during the upload. Check your connection and try again.", true); };
+  xhr.onabort = () => { finish(); toast("Upload cancelled.", true); };
   xhr.send(fd);
 });
 

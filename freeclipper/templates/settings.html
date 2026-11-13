@@ -42,6 +42,13 @@
     <p class="small muted">Upload .ttf or .otf files, then use the font's family name in a caption style.</p>
     <div class="row"><input id="fontfile" type="file" accept=".ttf,.otf"></div>
     <p class="small muted" id="fonts"></p>
+    <hr style="border:none;border-top:1px solid var(--line);margin:20px 0">
+    <h3>YouTube access</h3>
+    <p class="small muted">If YouTube links fail with a "confirm you're not a bot" message, upload a cookies.txt
+      exported (Netscape format) from a browser signed in to YouTube. Use a separate Google account, not your
+      personal one. The file stays on the server and is never shown again.</p>
+    <p class="small" id="ytstatus"></p>
+    <div class="row"><input id="ytcookies" type="file" accept=".txt,text/plain"><button class="sm danger" id="ytremove">Remove cookies</button></div>
   </div>
 
   <div class="card">
@@ -66,16 +73,20 @@
 {% block scripts %}
 <script>
 const $ = id => document.getElementById(id);
-$("pw").onclick = async () => {
-  try { await api("/api/me/password", { method: "POST", body: { current: $("cur").value, new: $("npw").value } });
-    toast("Password changed"); $("cur").value = $("npw").value = ""; } catch (e) { toast(e.message, true); }
-};
-$("tok").onclick = async () => {
+$("pw").onclick = e => withBusy(e.currentTarget, async () => {
+  if (!$("cur").value) throw new Error("Enter your current password.");
+  if ($("npw").value.length < 8) throw new Error("The new password must be at least 8 characters.");
+  await api("/api/me/password", { method: "POST", body: { current: $("cur").value, new: $("npw").value } });
+  toast("Password changed"); $("cur").value = $("npw").value = "";
+}, "Saving…");
+$("tok").onclick = e => withBusy(e.currentTarget, async () => {
   const { token } = await api("/api/me/token", { method: "POST" });
   $("tokout").innerHTML = `Copy it now, it is shown once:<br><code>${esc(token)}</code> <button class="sm" id="cp">Copy</button>`;
   $("cp").onclick = () => copyText(token);
-};
-$("revoke").onclick = async () => { await api("/api/me/token", { method: "DELETE" }); $("tokout").textContent = "Token revoked."; };
+}, "Creating…");
+$("revoke").onclick = e => withBusy(e.currentTarget, async () => {
+  await api("/api/me/token", { method: "DELETE" }); $("tokout").textContent = "Token revoked.";
+});
 
 api("/api/system").then(s => {
   $("sys").innerHTML = `
@@ -89,7 +100,10 @@ api("/api/system").then(s => {
     ${s.disk_free_mb !== undefined ? `<p>Storage: <code>${esc(s.data_dir)}</code>, ${s.disk_free_mb} MB free.</p>
       <p><a class="btn sm" href="/api/admin/backup">Download database backup</a> <button class="sm" id="cleanup">Run cleanup now</button></p>` : ""}`;
   const cl = document.getElementById("cleanup");
-  if (cl) cl.onclick = async () => { try { const r = await api("/api/admin/cleanup", { method: "POST" }); toast(`Cleanup done: ${r.temp_files} temp files removed, ${r.disk_free_mb} MB free`); } catch (e) { toast(e.message, true); } };
+  if (cl) cl.onclick = e => withBusy(e.currentTarget, async () => {
+    const r = await api("/api/admin/cleanup", { method: "POST" });
+    toast(`Cleanup done: ${r.temp_files} temp files removed, ${r.disk_free_mb} MB free`);
+  }, "Cleaning…");
   if ($("fonts")) $("fonts").textContent = s.fonts.length ? "Installed: " + s.fonts.join(", ") : "No custom fonts uploaded.";
 });
 
@@ -102,35 +116,57 @@ function showBrand(b) {
   if (b.has_logo) $("logo").src = "/branding/logo.png?" + Date.now();
 }
 api("/api/branding").then(showBrand);
-$("savebrand").onclick = async () => {
-  try {
-    await api("/api/branding", { method: "PUT", body: { app_name: $("app_name").value, accent: $("accent").value,
-      watermark: { enabled: $("wm_enabled").checked, position: $("wm_position").value, opacity: +$("wm_opacity").value, size: +$("wm_size").value } } });
-    location.reload();
-  } catch (e) { toast(e.message, true); }
-};
+$("savebrand").onclick = e => withBusy(e.currentTarget, async () => {
+  await api("/api/branding", { method: "PUT", body: { app_name: $("app_name").value, accent: $("accent").value,
+    watermark: { enabled: $("wm_enabled").checked, position: $("wm_position").value, opacity: +$("wm_opacity").value, size: +$("wm_size").value } } });
+  location.reload();
+}, "Saving…");
 $("logofile").onchange = async () => {
+  if (!$("logofile").files[0]) return;
   const fd = new FormData(); fd.append("file", $("logofile").files[0]);
-  try { showBrand(await api("/api/branding/logo", { method: "POST", form: fd })); toast("Logo updated"); } catch (e) { toast(e.message, true); }
+  try { showBrand(await api("/api/branding/logo", { method: "POST", form: fd })); toast("Logo updated"); }
+  catch (e) { toast(e.message, true); }
+  $("logofile").value = "";
 };
-$("logodel").onclick = async () => showBrand(await api("/api/branding/logo", { method: "DELETE" }));
+$("logodel").onclick = e => withBusy(e.currentTarget, async () => {
+  showBrand(await api("/api/branding/logo", { method: "DELETE" })); toast("Logo removed");
+});
 $("fontfile").onchange = async () => {
+  if (!$("fontfile").files[0]) return;
   const fd = new FormData(); fd.append("file", $("fontfile").files[0]);
-  try { await api("/api/fonts", { method: "POST", form: fd }); toast("Font added"); location.reload(); } catch (e) { toast(e.message, true); }
+  try { await api("/api/fonts", { method: "POST", form: fd }); toast("Font added"); location.reload(); }
+  catch (e) { toast(e.message, true); $("fontfile").value = ""; }
+};
+function showYt(s) {
+  $("ytstatus").textContent = (s.youtube_cookies ? "Cookies: installed." : "Cookies: none.") +
+    (s.youtube_proxy ? " Proxy: configured (YTDLP_PROXY)." : "");
+  $("ytremove").disabled = !s.youtube_cookies;
+}
+api("/api/system").then(showYt);
+$("ytcookies").onchange = async () => {
+  if (!$("ytcookies").files[0]) return;
+  const fd = new FormData(); fd.append("file", $("ytcookies").files[0]);
+  try { const r = await api("/api/admin/youtube-cookies", { method: "POST", form: fd }); toast(`Saved ${r.cookies} cookies`); showYt(await api("/api/system")); }
+  catch (e) { toast(e.message, true); }
+  $("ytcookies").value = "";
+};
+$("ytremove").onclick = async () => {
+  if (!confirm("Remove the YouTube cookies?")) return;
+  await withBusy($("ytremove"), async () => { await api("/api/admin/youtube-cookies", { method: "DELETE" }); showYt(await api("/api/system")); toast("Cookies removed"); });
 };
 async function loadUsers() {
   const users = await api("/api/users");
   $("users").innerHTML = users.map(u => `<tr><td>${esc(u.username)}</td><td>${u.is_admin ? "Admin" : "User"}</td>
-    <td>${u.id === {{ user.id }} ? "" : `<button class="sm danger" onclick="delUser(${u.id})">Delete</button>`}</td></tr>`).join("");
+    <td>${u.id === {{ user.id }} ? "" : `<button class="sm danger" onclick="delUser(${u.id}, this)">Delete</button>`}</td></tr>`).join("");
 }
-async function delUser(id) {
+function delUser(id, btn) {
   if (!confirm("Delete this user and all of their projects?")) return;
-  try { await api(`/api/users/${id}`, { method: "DELETE" }); loadUsers(); } catch (e) { toast(e.message, true); }
+  withBusy(btn, async () => { await api(`/api/users/${id}`, { method: "DELETE" }); toast("User deleted"); loadUsers(); });
 }
-$("adduser").onclick = async () => {
-  try { await api("/api/users", { method: "POST", body: { username: $("nu").value, password: $("np").value, is_admin: $("na").checked } });
-    $("nu").value = $("np").value = ""; loadUsers(); toast("User added"); } catch (e) { toast(e.message, true); }
-};
+$("adduser").onclick = e => withBusy(e.currentTarget, async () => {
+  await api("/api/users", { method: "POST", body: { username: $("nu").value.trim(), password: $("np").value, is_admin: $("na").checked } });
+  $("nu").value = $("np").value = ""; $("na").checked = false; loadUsers(); toast("User added");
+}, "Adding…");
 loadUsers();
 {% endif %}
 </script>

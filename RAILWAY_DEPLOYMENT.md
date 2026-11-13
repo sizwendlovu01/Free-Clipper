@@ -179,6 +179,8 @@ All optional except where noted. Names in brackets are older aliases that still 
 | `ANTHROPIC_API_KEY` | none | Optional, enables Claude. Stays server-side; never sent to browsers or logged. |
 | `CLAUDE_MODEL`, `CLAUDE_EFFORT` | claude-opus-5-5, medium | |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | off, qwen2.5:3b | Railway doesn't provide Ollama; leave `OLLAMA_URL` unset there. |
+| `YTDLP_PROXY` | none | Proxy for video-site downloads (e.g. `http://user:pass@host:port`), if YouTube blocks the server. |
+| `YTDLP_COOKIES_FILE` | `$STORAGE_ROOT/youtube_cookies.txt` | Where the admin-uploaded YouTube cookies are stored. Upload them in Settings. |
 
 ## 7. Resources and cost
 
@@ -266,7 +268,8 @@ volume deletes its backups.
 | Projects disappear after a redeploy | No volume, or it isn't mounted at `/data`. |
 | Jobs fail with "stopped unexpectedly 2 times" | The service ran out of memory. Use `WHISPER_MODEL=base`, keep `MAX_WORKERS=1`, or give the service more memory. |
 | "Storage is nearly full" | Delete projects, set `SOURCE_RETENTION_DAYS`, or resize the volume. Admin, Settings shows free space. |
-| YouTube asks for a sign-in check | YouTube sometimes blocks datacenter IP addresses. Retry later or upload the file instead. |
+| YouTube asks for a sign-in check | YouTube sometimes blocks cloud server IP addresses. As admin, open Settings, then **YouTube access**, and upload a cookies.txt exported (Netscape format, e.g. with a "Get cookies.txt" browser extension) from a browser signed in to YouTube with a spare Google account. Or set `YTDLP_PROXY` to a proxy URL. Users can always upload the file instead. |
+| Old styles or buttons after a deploy | Static files are fingerprinted (`?v=...`), so browsers fetch the new version automatically. If a page still looks wrong, hard-refresh once. |
 | Uploads fail on slow connections | Railway closes uploads that take longer than 5 minutes. Lower `MAX_UPLOAD_SIZE_MB` or upload shorter files. |
 | Claude not used | `ANTHROPIC_API_KEY` missing or invalid; the project page notes the fallback. |
 

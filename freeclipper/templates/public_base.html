@@ -6,7 +6,7 @@
   <title>{% block title %}{{ brand.app_name }}: AI video clipping{% endblock %}</title>
   <meta name="description" content="{{ brand.app_name }} turns long videos into short, captioned, vertical clips with AI. Self-hosted, no watermarks, open formats.">
   <meta name="theme-color" content="#08080a">
-  <link rel="stylesheet" href="/static/landing.css">
+  <link rel="stylesheet" href="/static/landing.css?v={{ v }}">
   <style>:root { --accent: {{ brand.accent }}; }</style>
   {% if brand.has_logo %}<link rel="icon" href="/branding/logo.png">{% endif %}
 </head>
@@ -88,7 +88,7 @@
   </div>
 </footer>
 {% endblock %}
-<script src="/static/landing.js" defer></script>
+<script src="/static/landing.js?v={{ v }}" defer></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>
