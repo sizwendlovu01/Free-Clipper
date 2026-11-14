@@ -123,7 +123,53 @@ SHUTDOWN_GRACE_SECONDS = _int("SHUTDOWN_GRACE_SECONDS", default=20)
 MAX_CONCURRENT_JOBS = max(1, _int("MAX_CONCURRENT_JOBS", "FC_MAX_CONCURRENT_JOBS", default=1))
 # Clips rendered in parallel within one project (each is one ffmpeg process).
 RENDER_WORKERS = max(1, _int("MAX_WORKERS", "FC_RENDER_WORKERS", default=1))
-FFMPEG_THREADS = max(0, _int("FFMPEG_THREADS", default=0))  # 0 = ffmpeg decides
+def _cgroup_value(*paths: str) -> str:
+    for p in paths:
+        try:
+            return Path(p).read_text().strip()
+        except OSError:
+            continue
+    return ""
+
+
+def container_memory_mb() -> int:
+    """The container's memory limit in MB (cgroup v2 or v1), or 0 when unlimited/unknown."""
+    raw = _cgroup_value("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    try:
+        mb = int(raw) // (1024 * 1024)
+    except ValueError:
+        return 0
+    return mb if 0 < mb < 1024 * 1024 else 0
+
+
+def container_cpus() -> int:
+    """CPUs actually granted to the container. os.cpu_count() reports the host's CPUs, and ffmpeg/x264
+    size their thread pools (and memory) from that, which overruns small plans."""
+    count = os.cpu_count() or 1
+    try:
+        count = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        pass
+    quota = _cgroup_value("/sys/fs/cgroup/cpu.max").split()
+    try:
+        if len(quota) == 2 and quota[0] != "max":
+            count = min(count, max(1, -(-int(quota[0]) // int(quota[1]))))
+        else:
+            q = int(_cgroup_value("/sys/fs/cgroup/cpu/cpu.cfs_quota_us") or -1)
+            period = int(_cgroup_value("/sys/fs/cgroup/cpu/cpu.cfs_period_us") or 100000)
+            if q > 0:
+                count = min(count, max(1, -(-q // period)))
+    except ValueError:
+        pass
+    return max(1, count)
+
+
+MEMORY_LIMIT_MB = container_memory_mb()
+# Under ~1.5 GB of RAM, render 720p-class output with lean encoder settings so ffmpeg fits beside the app.
+LOW_MEMORY = _bool("LOW_MEMORY_MODE", default=0 < MEMORY_LIMIT_MB < 1536)
+# 0 = auto: the CPUs granted to the container (capped at 2 in low-memory mode).
+FFMPEG_THREADS = max(0, _int("FFMPEG_THREADS", default=0)) or (
+    min(2, container_cpus()) if LOW_MEMORY else min(8, container_cpus()))
 MAX_UPLOAD_MB = max(1, _int("MAX_UPLOAD_SIZE_MB", "FC_MAX_UPLOAD_MB", default=500))
 MAX_DOWNLOAD_MB = max(50, _int("MAX_DOWNLOAD_SIZE_MB", default=2048))
 MAX_VIDEO_SECONDS = max(30, _int("MAX_VIDEO_DURATION", default=1800))
@@ -172,6 +218,8 @@ _allowed = [m.strip() for m in (_env("WHISPER_ALLOWED_MODELS", default="") or ""
 WHISPER_MODELS = [m for m in _ALL_WHISPER_MODELS if not _allowed or m in _allowed] or ["small"]
 if WHISPER_MODEL not in WHISPER_MODELS:
     WHISPER_MODEL = WHISPER_MODELS[0]
+# Keep the Whisper model in memory between jobs (faster) or release it after each job (less RAM).
+WHISPER_KEEP_LOADED = _bool("WHISPER_KEEP_LOADED", default=False)
 # Download the default model at startup so the first job doesn't wait for it.
 PRELOAD_WHISPER = _bool("PRELOAD_WHISPER", default=True)
 

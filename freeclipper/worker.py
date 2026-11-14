@@ -279,8 +279,10 @@ class Runner:
 
         def fetch_video() -> None:
             try:
+                # Leave room for the rendered clips (~15 MB each at 1080x1920) so rendering can't run out of space.
+                clip_space = 40 + 15 * max(1, min(config.MAX_CLIPS_PER_JOB, int(opts.get("max_clips", 6))))
                 video["path"], video["title"] = ingest.download(
-                    job["source"], jdir, lambda p: video.__setitem__("pct", p), stop)
+                    job["source"], jdir, lambda p: video.__setitem__("pct", p), stop, reserve_mb=clip_space)
             except BaseException as exc:  # reported when the video is needed
                 video["error"] = exc
 
@@ -388,7 +390,10 @@ class Runner:
                     prog.set(0.05, f"Downloading the {want_model} transcription model (first use only)", force=True)
                     transcribe.get_model(want_model)
                 prog.set(0.05, label, force=True)
-                transcript = transcribe.transcribe(audio, want_model, want_lang, want_task, on_transcribe, stop)
+                try:
+                    transcript = transcribe.transcribe(audio, want_model, want_lang, want_task, on_transcribe, stop)
+                finally:
+                    transcribe.release()  # give the memory back before rendering
                 self._save_transcript(jdir, transcript)
             self._update(job_id, language=transcript.get("language"))
             prog.set(0.55, force=True)
@@ -454,7 +459,10 @@ class Runner:
             failures = self._render_all(job_id, jdir, src, info, clip_rows, transcript, opts, prog)
             timings["render"] = time.monotonic() - t0
             if failures == len(clip_rows):
-                raise RuntimeError("Every clip failed to render; see the clip errors for details.")
+                first = db.one("SELECT error FROM clips WHERE job_id = ? AND error IS NOT NULL LIMIT 1", (job_id,))
+                reason = (first or {}).get("error") or ""
+                raise RuntimeError("Every clip failed to render. " + (reason.splitlines()[0][:300] if reason else
+                                   "See the clip errors for details."))
             if failures:
                 notes.append(f"{failures} of {len(clip_rows)} clips failed to render; see their errors below.")
             total = time.monotonic() - started
@@ -513,12 +521,16 @@ class Runner:
         done = failures = 0
         lock = threading.Lock()
         prog.set(0.70, f"Rendering clips (0 of {total} done)", force=True)
+        transcribe.trim_memory()
 
         def work(c: dict) -> None:
             if self._stopped(job_id):
                 raise Cancelled()
             db.execute("UPDATE clips SET status = 'rendering', updated_at = ? WHERE id = ?", (db.now(), c["id"]))
-            render.render_clip(jdir, src, info, c, transcript, opts, style, b)
+            try:
+                render.render_clip(jdir, src, info, c, transcript, opts, style, b)
+            finally:
+                transcribe.trim_memory()  # face tracking frees frames; return them to the OS
 
         with ThreadPoolExecutor(max_workers=min(config.RENDER_WORKERS, total)) as pool:
             futures = {pool.submit(work, c): c for c in clips}

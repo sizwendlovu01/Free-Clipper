@@ -143,13 +143,32 @@ def _run(url: str, opts: dict, dest_dir: Path, stem: str) -> tuple[Path, str]:
         return path, info.get("title") or url
 
 
+def size_aware_format(budget_mb: int) -> str:
+    """yt-dlp format choice that fits the storage budget: the best of 1080p/720p/480p/360p whose
+    reported size fits, then the smallest available. Formats without a reported size (often YouTube's
+    H.264 MP4s) are only used once nothing with a known size fits, since their size can't be checked."""
+    video_mb = max(10, int(budget_mb * 0.9))
+    audio_mb = max(5, int(budget_mb * 0.15))
+    known = [f"bv*[height<={h}][filesize_approx<{video_mb}M]+ba[filesize_approx<{audio_mb}M]"
+             for h in (1080, 720, 480, 360)]
+    if budget_mb >= 2000:  # plenty of room: unknown sizes are fine too
+        known.insert(0, "bv*[height<=1080]+ba")
+    return "/".join(known + ["bv*[height<=360]+ba", "b[height<=360]", "worst"])
+
+
 def download(url: str, dest_dir: Path, progress: Callable[[float], None],
-             should_stop: Callable[[], bool]) -> tuple[Path, str]:
-    """Full video (best <=1080p) with audio, merged to MP4."""
+             should_stop: Callable[[], bool], reserve_mb: int = 0) -> tuple[Path, str]:
+    """Full video with audio, merged to MP4, at the best quality (up to 1080p) that leaves `reserve_mb`
+    of storage free for the rendered clips."""
+    budget = download_limit_mb() - reserve_mb
+    if budget < 30:
+        raise RuntimeError("The server's storage is too full to download this video. Delete old projects, "
+                           "or ask the admin to enlarge the storage volume.")
     opts = _base_opts(progress, should_stop) | {
-        "format": "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b",
+        "format": size_aware_format(budget),
         "merge_output_format": "mp4",
         "outtmpl": str(dest_dir / "source.%(ext)s"),
+        "max_filesize": budget * 1024 * 1024,
     }
     return _run(url, opts, dest_dir, "source")
 

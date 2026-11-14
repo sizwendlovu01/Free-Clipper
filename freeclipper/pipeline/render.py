@@ -258,8 +258,11 @@ def render_clip(job_dir: Path, src: Path, info: dict, clip: dict, transcript: di
     start, end = float(clip["start"]), float(clip["end"])
     duration = end - start
     out_w, out_h = ASPECTS.get(options.get("aspect", "9:16"), ASPECTS["9:16"])
+    if config.LOW_MEMORY:  # 720p-class frames use less than half the encoder memory of 1080p
+        out_w, out_h = _even(out_w * 2 / 3), _even(out_h * 2 / 3)
     if options.get("aspect") == "original" and info["has_video"]:
         scale = min(1.0, 1920 / max(info["width"], info["height"]))
+        scale = min(1.0, (1280 if config.LOW_MEMORY else 1920) / max(info["width"], info["height"]))
         out_w, out_h = _even(info["width"] * scale), _even(info["height"] * scale)
     language = transcript.get("language")
 
@@ -299,15 +302,20 @@ def render_clip(job_dir: Path, src: Path, info: dict, clip: dict, transcript: di
                   f"[{label}][wm]overlay={_watermark_xy(wm.get('position', 'top-right'), int(out_w * 0.04))}[v2]")
         label = "v2"
 
-    tmp = out_dir / "clip.tmp.mp4"
-    cmd = [config.FFMPEG, "-y", "-v", "error", *inputs, "-t", f"{duration:.3f}",
+    # Work file on the container's large temporary disk; only the finished clip goes to the storage volume.
+    tmp = config.TEMP_DIR / f"render-{clip['id']}-{os.getpid()}-{threading.get_ident()}.mp4"
+    lean = ["-filter_threads", "1"] if config.LOW_MEMORY else []
+    cmd = [config.FFMPEG, "-y", "-v", "error", *media.thread_args(), *inputs, "-t", f"{duration:.3f}", *lean,
            "-filter_complex", graph, "-map", f"[{label}]"]
     if info["has_audio"]:
         cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "160k", "-ar", "48000"]
         if options.get("loudnorm", True):
             cmd += ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"]
     cmd += ["-c:v", "libx264", "-preset", config.X264_PRESET, "-crf", str(config.X264_CRF),
-            "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart", *media.thread_args(), tmp.name]
+            "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart", *media.thread_args()]
+    if config.LOW_MEMORY:
+        cmd += ["-x264-params", "rc-lookahead=10:sync-lookahead=0"]
+    cmd.append(str(tmp))
     try:
         # A clip should encode in a few times its length even on a small server; stop runaway renders.
         media.run(cmd, cwd=out_dir, timeout=min(config.JOB_TIMEOUT_SECONDS, max(300.0, duration * 30)))

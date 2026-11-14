@@ -55,6 +55,28 @@ def get_model(size: str):
         return _models[key]
 
 
+def release() -> None:
+    """Free the loaded model's memory (it reloads from disk in seconds next time). Keeps small servers
+    from holding hundreds of MB of RAM between jobs while ffmpeg needs it for rendering."""
+    import gc
+
+    if config.WHISPER_KEEP_LOADED:
+        return
+    with _lock:
+        _models.clear()
+    gc.collect()
+    trim_memory()
+
+
+def trim_memory() -> None:
+    """Hand freed heap memory back to the OS (glibc keeps it otherwise), so ffmpeg has room."""
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def model_cached(size: str) -> bool:
     """True if the Whisper model is already on disk (otherwise first use downloads it)."""
     try:

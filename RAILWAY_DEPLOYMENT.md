@@ -174,6 +174,8 @@ All optional except where noted. Names in brackets are older aliases that still 
 | `WHISPER_MODEL` | small | Default transcription model. `base` is the best fit for small servers. |
 | `WHISPER_ALLOWED_MODELS` | all | Restrict choices, e.g. `tiny,base,small` (large models need several GB of RAM). |
 | `WHISPER_CPU_THREADS`, `WHISPER_BATCH_SIZE` | auto | Lower `WHISPER_BATCH_SIZE` (e.g. 4) if transcription runs out of memory. |
+| `LOW_MEMORY_MODE` | auto | On automatically when the service has under 1.5 GB RAM: clips render at 720x1280 with lean encoder settings so they fit in 512 MB. Set `false` to force 1080p (needs about 1 GB). |
+| `WHISPER_KEEP_LOADED` | false | Keep the Whisper model in RAM between jobs. Leave off on small plans so rendering has the memory. |
 | `PRELOAD_WHISPER` | true | Download the default model at start-up. |
 | `AI_PROVIDER` | auto | `auto` uses Claude if `ANTHROPIC_API_KEY` is set, else Ollama if `OLLAMA_URL` is reachable, else the built-in scorer. An unavailable choice falls back the same way (the project shows a note). |
 | `ANTHROPIC_API_KEY` | none | Optional, enables Claude. Stays server-side; never sent to browsers or logged. |
@@ -268,6 +270,7 @@ volume deletes its backups.
 | Projects disappear after a redeploy | No volume, or it isn't mounted at `/data`. |
 | Jobs fail with "stopped unexpectedly 2 times" | The service ran out of memory. Use `WHISPER_MODEL=base`, keep `MAX_WORKERS=1`, or give the service more memory. |
 | "Storage is nearly full" | Delete projects, set `SOURCE_RETENTION_DAYS`, or resize the volume. Admin, Settings shows free space. |
+| "Every clip failed to render" | The message now includes the first clip's error. Out of storage: the app picks a smaller download to fit, but on a tiny volume long videos drop to 360p/480p. Set `MODEL_DIR=/tmp/clipforge-models` to keep Whisper models off the volume, set `SOURCE_RETENTION_DAYS=1`, or resize the volume. Out of memory: choose fewer clips or add RAM. |
 | YouTube asks for a sign-in check | YouTube sometimes blocks cloud server IP addresses. As admin, open Settings, then **YouTube access**, and upload a cookies.txt exported (Netscape format, e.g. with a "Get cookies.txt" browser extension) from a browser signed in to YouTube with a spare Google account. Or set `YTDLP_PROXY` to a proxy URL. Users can always upload the file instead. |
 | Old styles or buttons after a deploy | Static files are fingerprinted (`?v=...`), so browsers fetch the new version automatically. If a page still looks wrong, hard-refresh once. |
 | Uploads fail on slow connections | Railway closes uploads that take longer than 5 minutes. Lower `MAX_UPLOAD_SIZE_MB` or upload shorter files. |

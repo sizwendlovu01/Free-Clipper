@@ -87,7 +87,7 @@ def test_exports(c: httpx.Client, job: dict) -> None:
     r = c.get(clip["files"]["ass"])
     check("ASS export", r.status_code == 200 and "[Script Info]" in r.text)
     r = c.get(clip["files"]["meta"])
-    check("JSON metadata export", r.status_code == 200 and r.json().get("width") in (1080, 1920))
+    check("JSON metadata export", r.status_code == 200 and r.json().get("width") in (720, 1080, 1280, 1920))
     r = c.get(clip["files"]["thumb"])
     check("thumbnail", r.status_code == 200 and r.content[:2] == b"\xff\xd8")
     for fmt, marker in (("srt", "-->"), ("vtt", "WEBVTT"), ("txt", ""), ("json", "segments")):

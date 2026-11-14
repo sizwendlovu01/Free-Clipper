@@ -26,7 +26,14 @@ def run(cmd: list[str], cwd: Path | None = None, timeout: float | None = None) -
     except subprocess.TimeoutExpired as exc:
         raise MediaError(f"{Path(cmd[0]).name} took longer than {timeout:.0f}s and was stopped.") from exc
     if proc.returncode != 0:
-        tail = "\n".join((proc.stderr or "").strip().splitlines()[-15:])
+        stderr = proc.stderr or ""
+        if "No space left on device" in stderr:
+            raise MediaError("The server ran out of storage space. Delete old projects, choose fewer clips, "
+                             "or ask the admin to enlarge the storage volume.")
+        if proc.returncode in (-9, 137) or "Killed" in stderr[-200:]:
+            raise MediaError("The server ran out of memory while processing. Try fewer clips or a shorter "
+                             "video, or ask the admin to give the server more memory.")
+        tail = "\n".join(stderr.strip().splitlines()[-15:])
         raise MediaError(f"{Path(cmd[0]).name} failed ({proc.returncode}):\n{tail}")
     return proc
 
