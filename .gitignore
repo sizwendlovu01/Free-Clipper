@@ -23,3 +23,7 @@ data-*/
 
 # Test runs
 tests/.e2e_state.json
+
+# Browser cookies are credentials: never commit them
+*cookies*.txt
+cookies.txt
