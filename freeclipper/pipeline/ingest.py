@@ -61,6 +61,11 @@ def _access_opts():
             copy.unlink(missing_ok=True)
 
 
+def download_limit_mb() -> int:
+    free = int(shutil.disk_usage(config.JOBS_DIR).free / 1024 / 1024)
+    return max(1, min(config.MAX_DOWNLOAD_MB, free - 50))
+
+
 def video_info(url: str) -> dict:
     """Metadata only (title, duration), without downloading media."""
     import yt_dlp
@@ -111,7 +116,8 @@ def _base_opts(progress: Callable[[float], None], should_stop: Callable[[], bool
         "extractor_retries": 3,
         "socket_timeout": 30,
         "concurrent_fragment_downloads": 4,
-        "max_filesize": config.MAX_DOWNLOAD_MB * 1024 * 1024,
+        # Never download more than the volume can hold (keeping 50 MB spare for clips and audio).
+        "max_filesize": download_limit_mb() * 1024 * 1024,
     }
     if config.FFMPEG != "ffmpeg":
         opts["ffmpeg_location"] = config.FFMPEG
@@ -130,8 +136,9 @@ def _run(url: str, opts: dict, dest_dir: Path, stem: str) -> tuple[Path, str]:
         if not path or not path.exists():
             candidates = [p for p in sorted(dest_dir.glob(f"{stem}.*")) if not p.name.endswith((".part", ".ytdl"))]
             if not candidates:
-                raise RuntimeError(f"No file was downloaded. The video may be larger than the "
-                                   f"{config.MAX_DOWNLOAD_MB} MB download limit.")
+                raise RuntimeError(f"No file was downloaded. The video is probably larger than the "
+                                   f"{download_limit_mb()} MB this server can store right now. Try a "
+                                   f"shorter video, or free up storage.")
             path = candidates[0]
         return path, info.get("title") or url
 

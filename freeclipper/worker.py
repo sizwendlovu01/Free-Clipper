@@ -71,6 +71,16 @@ def disk_free_mb() -> int:
     return int(shutil.disk_usage(config.JOBS_DIR).free / 1024 / 1024)
 
 
+def disk_total_mb() -> int:
+    return int(shutil.disk_usage(config.JOBS_DIR).total / 1024 / 1024)
+
+
+def min_free_mb() -> int:
+    """Free space to keep in reserve before refusing new videos: MIN_FREE_DISK_MB, but never more than
+    10% of the volume (at least 100 MB), so a small volume isn't permanently locked."""
+    return min(config.MIN_FREE_DISK_MB, max(100, disk_total_mb() // 10))
+
+
 def friendly_error(exc: BaseException) -> str:
     text = str(exc) or type(exc).__name__
     low = text.lower()
@@ -299,7 +309,7 @@ class Runner:
             if not src and job["source_type"] != "url":
                 raise RuntimeError("The uploaded file is missing.")
             if not src:
-                if disk_free_mb() < config.MIN_FREE_DISK_MB:
+                if disk_free_mb() < min_free_mb():
                     raise RuntimeError("The server's storage is nearly full, so new videos can't be downloaded "
                                        "right now. Delete old projects or try again later.")
                 prog.set(0.01, "Checking the video", force=True)
@@ -605,7 +615,7 @@ class Runner:
                         src.unlink(missing_ok=True)
                         stats["sources"] += 1
         stats["disk_free_mb"] = disk_free_mb()
-        if stats["disk_free_mb"] < config.MIN_FREE_DISK_MB:
+        if stats["disk_free_mb"] < min_free_mb():
             log.warning("low disk space: %d MB free in %s", stats["disk_free_mb"], config.JOBS_DIR)
         log.info("cleanup: %s", stats)
         return stats

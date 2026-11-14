@@ -244,12 +244,12 @@ def usage(user: dict) -> dict:
 
 def check_capacity(user: dict, new_job: bool = True) -> None:
     """Cost protection: server-wide queue and disk limits, plus per-user quotas (admins exempt)."""
-    from .worker import disk_free_mb
+    from .worker import disk_free_mb, min_free_mb
 
     queued = db.one("SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'")["n"]
     if queued >= config.MAX_QUEUED_JOBS:
         raise HTTPException(503, "The processing queue is full right now. Please try again in a few minutes.")
-    if disk_free_mb() < config.MIN_FREE_DISK_MB:
+    if disk_free_mb() < min_free_mb():
         raise HTTPException(507, "The server's storage is nearly full. Please try again later.")
     if user["is_admin"]:
         return
@@ -520,7 +520,7 @@ def api_user_delete(uid: int, admin: dict = Depends(require_admin)):
 
 @app.get("/api/system")
 def api_system(user: dict = Depends(require_user)):
-    from .worker import disk_free_mb
+    from .worker import disk_free_mb, disk_total_mb
 
     queue = db.one("SELECT SUM(status = 'queued') AS queued, SUM(status = 'running') AS running FROM jobs")
     info = {
@@ -541,6 +541,7 @@ def api_system(user: dict = Depends(require_user)):
     }
     if user["is_admin"]:  # server details only for admins
         info.update(ollama_url=config.OLLAMA_URL, data_dir=str(config.DATA_DIR), disk_free_mb=disk_free_mb(),
+                    disk_total_mb=disk_total_mb(),
                     render_workers=config.RENDER_WORKERS,
                     youtube_cookies=config.YTDLP_COOKIES_FILE.is_file(), youtube_proxy=bool(config.YTDLP_PROXY))
     return info
@@ -551,7 +552,7 @@ def api_system(user: dict = Depends(require_user)):
 def health():
     """Cheap readiness check for hosting platforms: database reachable, ffmpeg installed. Never touches
     video processing."""
-    from .worker import disk_free_mb
+    from .worker import disk_free_mb, min_free_mb
 
     try:
         db.one("SELECT 1 AS ok")
@@ -561,7 +562,7 @@ def health():
     if not FFMPEG_OK:
         return JSONResponse({"ok": False, "detail": "ffmpeg not found"}, status_code=503)
     free = disk_free_mb()
-    return {"ok": True, "disk_low": free < config.MIN_FREE_DISK_MB}
+    return {"ok": True, "disk_low": free < min_free_mb()}
 
 
 @app.get("/api/admin/backup")

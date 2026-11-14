@@ -97,7 +97,7 @@ api("/api/system").then(s => {
     <p>Default transcription model: <code>${esc(s.whisper_default)}</code></p>
     <p>Limits: ${s.limits.max_upload_mb} MB uploads, ${Math.round(s.limits.max_video_seconds / 60)} min videos, ${s.limits.max_clips_per_job} clips per video.
        ${s.limits.quotas_apply ? `Your usage: ${s.usage.jobs_last_24h}/${s.limits.user_jobs_per_day} videos in 24 h, ${s.usage.storage_mb}/${s.limits.user_max_storage_mb} MB storage.` : "Quotas don't apply to admins."}</p>
-    ${s.disk_free_mb !== undefined ? `<p>Storage: <code>${esc(s.data_dir)}</code>, ${s.disk_free_mb} MB free.</p>
+    ${s.disk_free_mb !== undefined ? `<p>Storage: <code>${esc(s.data_dir)}</code>, ${s.disk_free_mb} MB free of ${s.disk_total_mb} MB.</p>
       <p><a class="btn sm" href="/api/admin/backup">Download database backup</a> <button class="sm" id="cleanup">Run cleanup now</button></p>` : ""}`;
   const cl = document.getElementById("cleanup");
   if (cl) cl.onclick = e => withBusy(e.currentTarget, async () => {
