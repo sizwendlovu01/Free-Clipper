@@ -173,8 +173,8 @@ All optional except where noted. Names in brackets are older aliases that still 
 | `SOURCE_RETENTION_DAYS` | 0 (keep) | Delete source videos after N days. Clips stay; they just can't be re-rendered. |
 | `WHISPER_MODEL` | small | Default transcription model. `base` is the best fit for small servers. |
 | `WHISPER_ALLOWED_MODELS` | all | Restrict choices, e.g. `tiny,base,small` (large models need several GB of RAM). |
-| `WHISPER_CPU_THREADS`, `WHISPER_BATCH_SIZE` | auto | Lower `WHISPER_BATCH_SIZE` (e.g. 4) if transcription runs out of memory. |
-| `LOW_MEMORY_MODE` | auto | On automatically when the service has under 1.5 GB RAM: clips render at 720x1280 with lean encoder settings so they fit in 512 MB. Set `false` to force 1080p (needs about 1 GB). |
+| `WHISPER_CPU_THREADS`, `WHISPER_BATCH_SIZE` | auto | Threads follow the CPUs granted to the service; batch size is 8, or 1 in low-memory mode (which also turns off the MKL backend to save ~200 MB). Lower `WHISPER_BATCH_SIZE` if transcription runs out of memory. |
+| `LOW_MEMORY_MODE` | auto | On automatically when the service has under 1.5 GB RAM: lean encoder and transcription settings so a job fits in 512 MB. Clips always render at 720p (720x1280 for 9:16). |
 | `WHISPER_KEEP_LOADED` | false | Keep the Whisper model in RAM between jobs. Leave off on small plans so rendering has the memory. |
 | `PRELOAD_WHISPER` | true | Download the default model at start-up. |
 | `AI_PROVIDER` | auto | `auto` uses Claude if `ANTHROPIC_API_KEY` is set, else Ollama if `OLLAMA_URL` is reachable, else the built-in scorer. An unavailable choice falls back the same way (the project shows a note). |

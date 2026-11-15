@@ -85,7 +85,7 @@ function render() {
     ${busy ? '<button class="danger" onclick="cancelJob(this)">Cancel</button>' : ""}
     ${job.clips_done ? `<a class="btn primary" href="/api/jobs/${JOB}/export.zip">Download all (.zip)</a>` : ""}
     ${["failed", "cancelled"].includes(job.status) ? '<button onclick="retry(this)">Retry</button>' : ""}
-    ${job.status !== "running" ? '<button class="danger" onclick="delJob(this)">Delete</button>' : ""}`;
+    <button class="danger" onclick="delJob(this)">Delete project</button>`;
   let status = "";
   if (busy) status = `<div class="small" style="margin-bottom:6px">${esc(job.stage)} · ${(job.progress * 100).toFixed(0)}%</div>
     <div class="progress"><div style="width:${(job.progress * 100).toFixed(1)}%"></div></div>`;
@@ -179,8 +179,11 @@ function editClip(id) {
 }
 
 function delClip(id, btn) {
-  if (!confirm("Delete this clip?")) return;
-  withBusy(btn, async () => { await api(`/api/clips/${id}`, { method: "DELETE" }); toast("Clip deleted"); load(); });
+  if (!confirm("Permanently delete this clip? Its video, thumbnail and caption files are removed from storage. This can't be undone.")) return;
+  withBusy(btn, async () => {
+    const r = await api(`/api/clips/${id}`, { method: "DELETE" });
+    toast(`Clip deleted${r && r.freed_mb ? ` (${r.freed_mb} MB freed)` : ""}`); load();
+  }, "Deleting…");
 }
 function cancelJob(btn) {
   withBusy(btn, async () => { await api(`/api/jobs/${JOB}/cancel`, { method: "POST" }); toast("Cancelling…"); load(); }, "Cancelling…");
@@ -189,7 +192,8 @@ function retry(btn) {
   withBusy(btn, async () => { await api(`/api/jobs/${JOB}/reanalyze`, { method: "POST", body: {} }); toast("Queued again"); load(); }, "Queuing…");
 }
 function delJob(btn) {
-  if (!confirm("Delete this project, its source video and all clips?")) return;
+  const running = job && ["queued", "running"].includes(job.status);
+  if (!confirm((running ? "This stops processing. " : "") + "Permanently delete this project? Its source video, every clip, captions and transcript are removed from storage. This can't be undone.")) return;
   withBusy(btn, async () => { await api(`/api/jobs/${JOB}`, { method: "DELETE" }); location.href = "/"; }, "Deleting…");
 }
 

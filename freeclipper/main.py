@@ -25,7 +25,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from . import auth, config, db
 from .pipeline import ingest, media
 from .pipeline.render import ASPECTS
-from .worker import Runner, find_source, job_dir
+from .worker import Runner, find_source, job_dir, purge_job, remove_clip_files
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("freeclipper")
@@ -507,13 +507,15 @@ async def api_user_create(request: Request, admin: dict = Depends(require_admin)
 def api_user_delete(uid: int, admin: dict = Depends(require_admin)):
     if uid == admin["id"]:
         raise HTTPException(400, "You cannot delete yourself.")
+    if not db.one("SELECT id FROM users WHERE id = ?", (uid,)):
+        raise HTTPException(404, "User not found.")
+    freed = 0
     for j in db.query("SELECT id, status FROM jobs WHERE user_id = ?", (uid,)):
         if j["status"] == "running":
-            raise HTTPException(409, "That user has a job running. Cancel it first.")
-    for j in db.query("SELECT id FROM jobs WHERE user_id = ?", (uid,)):
-        shutil.rmtree(job_dir(j["id"]), ignore_errors=True)
+            runner.stop_and_wait(j["id"])
+        freed += purge_job(j["id"])
     db.execute("DELETE FROM users WHERE id = ?", (uid,))
-    return {"ok": True}
+    return {"ok": True, "freed_mb": round(freed / 1048576, 1)}
 
 
 # ---------------- system / branding ----------------
@@ -869,11 +871,12 @@ async def api_job_reanalyze(job_id: str, request: Request, user: dict = Depends(
 @app.delete("/api/jobs/{job_id}")
 def api_job_delete(job_id: str, user: dict = Depends(require_user)):
     job = own_job(job_id, user)
-    if job["status"] == "running":
-        raise HTTPException(409, "Cancel the job before deleting it.")
-    db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-    shutil.rmtree(job_dir(job_id), ignore_errors=True)
-    return {"ok": True}
+    if job["status"] == "running" or runner.is_active(job_id):
+        # Stop processing first so no file is still being written; if the worker is mid-way through a
+        # long ffmpeg call it removes whatever it writes once it notices the project is gone.
+        runner.stop_and_wait(job_id)
+    freed = purge_job(job_id)
+    return {"ok": True, "freed_mb": round(freed / 1048576, 1)}
 
 
 @app.get("/api/jobs/{job_id}/transcript.{fmt}")
@@ -1005,11 +1008,10 @@ async def api_clip_update(clip_id: str, request: Request, user: dict = Depends(r
 @app.delete("/api/clips/{clip_id}")
 def api_clip_delete(clip_id: str, user: dict = Depends(require_user)):
     clip, job = own_clip(clip_id, user)
-    if clip["status"] == "rendering":
-        raise HTTPException(409, "This clip is rendering right now.")
+    # Safe while rendering too: the renderer removes its output when it finds the clip deleted.
     db.execute("DELETE FROM clips WHERE id = ?", (clip_id,))
-    shutil.rmtree(job_dir(job["id"]) / "clips" / clip_id, ignore_errors=True)
-    return {"ok": True}
+    freed = remove_clip_files(job["id"], clip_id)
+    return {"ok": True, "freed_mb": round(freed / 1048576, 1)}
 
 
 @app.get("/files/{clip_id}/{name}")

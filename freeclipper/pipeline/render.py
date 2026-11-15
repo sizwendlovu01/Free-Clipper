@@ -13,7 +13,8 @@ from . import captions, media
 
 log = logging.getLogger("freeclipper.render")
 
-ASPECTS = {"9:16": (1080, 1920), "1:1": (1080, 1080), "4:5": (1080, 1350), "16:9": (1920, 1080)}
+# Every clip renders at 720p (the short side is 720 px): sharp on phones, small files, fast to encode.
+ASPECTS = {"9:16": (720, 1280), "1:1": (720, 720), "4:5": (720, 900), "16:9": (1280, 720)}
 
 
 def _even(v: float) -> int:
@@ -258,11 +259,8 @@ def render_clip(job_dir: Path, src: Path, info: dict, clip: dict, transcript: di
     start, end = float(clip["start"]), float(clip["end"])
     duration = end - start
     out_w, out_h = ASPECTS.get(options.get("aspect", "9:16"), ASPECTS["9:16"])
-    if config.LOW_MEMORY:  # 720p-class frames use less than half the encoder memory of 1080p
-        out_w, out_h = _even(out_w * 2 / 3), _even(out_h * 2 / 3)
     if options.get("aspect") == "original" and info["has_video"]:
-        scale = min(1.0, 1920 / max(info["width"], info["height"]))
-        scale = min(1.0, (1280 if config.LOW_MEMORY else 1920) / max(info["width"], info["height"]))
+        scale = min(1.0, 720 / min(info["width"], info["height"]))  # 720p, never upscaled
         out_w, out_h = _even(info["width"] * scale), _even(info["height"] * scale)
     language = transcript.get("language")
 

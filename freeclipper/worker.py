@@ -49,6 +49,45 @@ def find_source(job_id: str) -> Path | None:
     return None
 
 
+def dir_size(path: Path) -> int:
+    total = 0
+    for f in path.rglob("*"):
+        try:
+            if f.is_file():
+                total += f.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def remove_temp_files(clip_ids: list[str]) -> None:
+    """Delete in-progress render files for these clips from the temp folder."""
+    for cid in clip_ids:
+        for f in config.TEMP_DIR.glob(f"render-{cid}-*"):
+            f.unlink(missing_ok=True)
+
+
+def remove_clip_files(job_id: str, clip_id: str) -> int:
+    """Permanently delete one clip's folder (video, thumbnail, captions, metadata). Returns bytes freed."""
+    cdir = job_dir(job_id) / "clips" / clip_id
+    freed = dir_size(cdir) if cdir.exists() else 0
+    shutil.rmtree(cdir, ignore_errors=True)
+    remove_temp_files([clip_id])
+    return freed
+
+
+def purge_job(job_id: str) -> int:
+    """Permanently delete a project: its database rows (clips cascade) and every stored file.
+    Returns the bytes freed. A worker still finishing this job removes anything it writes afterwards."""
+    clip_ids = [c["id"] for c in db.query("SELECT id FROM clips WHERE job_id = ?", (job_id,))]
+    db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+    jdir = job_dir(job_id)
+    freed = dir_size(jdir) if jdir.exists() else 0
+    shutil.rmtree(jdir, ignore_errors=True)
+    remove_temp_files(clip_ids)
+    return freed
+
+
 def template_style(template_id: int | None) -> dict:
     row = None
     if template_id:
@@ -192,6 +231,19 @@ class Runner:
     def cancel(self, job_id: str) -> None:
         self._cancel.add(job_id)
 
+    def is_active(self, job_id: str) -> bool:
+        with self._active_lock:
+            return job_id in self._active
+
+    def stop_and_wait(self, job_id: str, timeout: float = 20.0) -> bool:
+        """Cancel a running job and wait for its worker to let go of its files."""
+        self.cancel(job_id)
+        self._wake.set()
+        end = time.monotonic() + timeout
+        while self.is_active(job_id) and time.monotonic() < end:
+            time.sleep(0.2)
+        return not self.is_active(job_id)
+
     def _loop(self) -> None:
         while not self._stopping:
             try:
@@ -279,7 +331,7 @@ class Runner:
 
         def fetch_video() -> None:
             try:
-                # Leave room for the rendered clips (~15 MB each at 1080x1920) so rendering can't run out of space.
+                # Leave room for the rendered clips (~15 MB each, with margin) so rendering can't run out of space.
                 clip_space = 40 + 15 * max(1, min(config.MAX_CLIPS_PER_JOB, int(opts.get("max_clips", 6))))
                 video["path"], video["title"] = ingest.download(
                     job["source"], jdir, lambda p: video.__setitem__("pct", p), stop, reserve_mb=clip_space)
@@ -485,7 +537,9 @@ class Runner:
             if video_thread and video_thread.is_alive():
                 self._cancel.add(job_id)  # stop the download if the job ended early
                 video_thread.join(timeout=30)
-            if not requeued:  # keep partial downloads when the job will resume after a restart
+            if not db.one("SELECT id FROM jobs WHERE id = ?", (job_id,)):
+                shutil.rmtree(jdir, ignore_errors=True)  # deleted while running: leave nothing behind
+            elif not requeued:  # keep partial downloads when the job will resume after a restart
                 self._clean_leftovers(jdir)
             self._cancel.discard(job_id)
             self._deadline.pop(job_id, None)
@@ -531,6 +585,8 @@ class Runner:
                 render.render_clip(jdir, src, info, c, transcript, opts, style, b)
             finally:
                 transcribe.trim_memory()  # face tracking frees frames; return them to the OS
+                if not db.one("SELECT id FROM clips WHERE id = ?", (c["id"],)):
+                    remove_clip_files(job_id, c["id"])  # deleted while rendering
 
         with ThreadPoolExecutor(max_workers=min(config.RENDER_WORKERS, total)) as pool:
             futures = {pool.submit(work, c): c for c in clips}
@@ -559,6 +615,8 @@ class Runner:
         if not clip:
             return
         job = db.one("SELECT * FROM jobs WHERE id = ?", (clip["job_id"],))
+        if not job:
+            return
         try:
             jdir = job_dir(job["id"])
             src = find_source(job["id"])
@@ -569,8 +627,13 @@ class Runner:
             transcript = json.loads((jdir / "transcript.json").read_text(encoding="utf-8"))
             opts = json.loads(job["options"] or "{}")
             clip["hashtags"] = json.loads(clip["hashtags"] or "[]")
-            render.render_clip(jdir, src, info, clip, transcript, opts,
-                               template_style(clip["template_id"] or opts.get("template_id")), brand())
+            try:
+                render.render_clip(jdir, src, info, clip, transcript, opts,
+                                   template_style(clip["template_id"] or opts.get("template_id")), brand())
+            finally:
+                if not db.one("SELECT id FROM clips WHERE id = ?", (clip_id,)):
+                    remove_clip_files(job["id"], clip_id)  # deleted while re-rendering
+                    return
             db.execute("UPDATE clips SET status = 'done', error = NULL, updated_at = ? WHERE id = ?",
                        (db.now(), clip_id))
         except Exception as exc:
@@ -594,7 +657,7 @@ class Runner:
     def cleanup(self) -> dict:
         """Remove expired temporary files, leftovers and orphaned folders. Never touches rendered clips,
         captions or transcripts. Old source videos are removed only if SOURCE_RETENTION_DAYS is set."""
-        stats = {"temp_files": 0, "orphans": 0, "leftover_dirs": 0, "sources": 0}
+        stats = {"temp_files": 0, "orphans": 0, "orphan_clips": 0, "leftover_dirs": 0, "sources": 0}
         cutoff = time.time() - config.TEMP_FILE_MAX_AGE_HOURS * 3600
         for p in sorted(config.TEMP_DIR.rglob("*"), key=lambda x: len(x.parts), reverse=True):
             try:
@@ -617,6 +680,13 @@ class Runner:
                 continue
             if job["status"] in ("queued", "running"):
                 continue
+            known = {c["id"] for c in db.query("SELECT id FROM clips WHERE job_id = ?", (d.name,))}
+            clips_dir = d / "clips"
+            if clips_dir.is_dir():
+                for cd in clips_dir.iterdir():
+                    if cd.is_dir() and cd.name not in known and cd.stat().st_mtime < time.time() - 600:
+                        shutil.rmtree(cd, ignore_errors=True)
+                        stats["orphan_clips"] += 1
             self._clean_leftovers(d)
             stats["leftover_dirs"] += 1
             if config.SOURCE_RETENTION_DAYS:

@@ -48,7 +48,8 @@ def get_model(size: str):
             _models.clear()
             _models[key] = WhisperModel(
                 size, device=device, compute_type=compute,
-                cpu_threads=config.WHISPER_CPU_THREADS,
+                # The host's core count inside a container: oversized thread pools cost memory.
+                cpu_threads=config.WHISPER_CPU_THREADS or config.container_cpus(),
                 num_workers=config.MAX_CONCURRENT_JOBS,
                 download_root=str(config.MODEL_DIR),
             )
@@ -100,7 +101,19 @@ def load_wav(audio: Path) -> np.ndarray:
     with wave.open(str(audio), "rb") as wf:
         if wf.getframerate() != 16000 or wf.getnchannels() != 1 or wf.getsampwidth() != 2:
             raise ValueError("Expected 16 kHz mono 16-bit WAV audio.")
-        return np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+        # Fill one float32 array in chunks: no second full-length copy (a 30 min video is ~110 MB of samples).
+        total = wf.getnframes()
+        out = np.empty(total, dtype=np.float32)
+        pos = 0
+        while pos < total:
+            chunk = np.frombuffer(wf.readframes(min(total - pos, 16000 * 60)), dtype=np.int16)
+            if not len(chunk):
+                break
+            out[pos:pos + len(chunk)] = chunk
+            pos += len(chunk)
+        out = out[:pos]
+        out *= 1 / 32768.0
+        return out
 
 
 CAPTIONS_MODEL = "platform-captions"
@@ -175,7 +188,7 @@ def transcribe(audio: Path, model_size: str, language: str | None, task: str,
             samples,
             language=language or None,
             task=task,
-            batch_size=config.WHISPER_BATCH_SIZE or (16 if device == "cuda" else 8),
+            batch_size=config.WHISPER_BATCH_SIZE or (16 if device == "cuda" else 1 if config.LOW_MEMORY else 8),
             word_timestamps=True,
             vad_filter=True,
             beam_size=5,

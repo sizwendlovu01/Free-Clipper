@@ -71,6 +71,94 @@ def upload(c: httpx.Client, video: Path, options: dict) -> httpx.Response:
                       data={"options": json.dumps(options)})
 
 
+def playable(c: httpx.Client, url: str) -> tuple[bool, str]:
+    """Download a clip and decode every frame with ffmpeg: the file must be a complete, valid video."""
+    import shutil
+    import subprocess
+    import tempfile
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return True, "ffmpeg not found here; skipped full decode"
+    r = c.get(url)
+    if r.status_code != 200 or len(r.content) < 10_000:
+        return False, f"HTTP {r.status_code}, {len(r.content)} bytes"
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "clip.mp4"
+        f.write_bytes(r.content)
+        p = subprocess.run([ffmpeg, "-v", "error", "-i", str(f), "-f", "null", "-"], capture_output=True, text=True)
+    return p.returncode == 0 and not p.stderr.strip(), (p.stderr.strip()[-200:] or f"{len(r.content) // 1024} KB")
+
+
+def job_path(storage: Path | None, job_id: str) -> Path | None:
+    return storage / "jobs" / job_id if storage else None
+
+
+def wait_gone(path: Path | None, timeout: float = 60) -> bool:
+    end = time.time() + timeout
+    while path is not None and path.exists() and time.time() < end:
+        time.sleep(1)
+    return path is None or not path.exists()
+
+
+def test_deletion(admin: httpx.Client, user: httpx.Client, job: dict, video: Path, opts: dict,
+                  storage: Path | None) -> None:
+    jpath = job_path(storage, job["id"])
+    done = [x for x in job["clips"] if x["status"] == "done"]
+    for x in done:
+        ok, detail = playable(admin, x["files"]["video"])
+        check(f"clip {x['index']} is a playable video", ok, detail)
+    victim = job["clips"][-1]
+    check("other users can't delete this clip", user.delete(f"/api/clips/{victim['id']}").status_code == 404)
+    check("other users can't delete this project", user.delete(f"/api/jobs/{job['id']}").status_code == 404)
+    r = admin.delete(f"/api/clips/{victim['id']}")
+    check("clip delete", r.status_code == 200 and r.json().get("freed_mb", 0) > 0, r.text[:120])
+    after = admin.get(f"/api/jobs/{job['id']}").json()
+    check("deleted clip removed from the project", all(x["id"] != victim["id"] for x in after["clips"]))
+    check("deleted clip's video is gone", admin.get(victim["files"]["video"]).status_code == 404)
+    check("other clips are untouched", all(admin.get(x["files"]["video"]).status_code == 200
+                                           for x in after["clips"] if x["status"] == "done"))
+    if jpath:
+        check("deleted clip's files removed from storage", not (jpath / "clips" / victim["id"]).exists())
+
+    # Deleting a project while it is processing must stop it and leave nothing behind.
+    r = upload(admin, video, opts)
+    running_id = r.json()["id"] if r.status_code == 200 else ""
+    end = time.time() + 300
+    while running_id and time.time() < end:
+        j = admin.get(f"/api/jobs/{running_id}").json()
+        if j["status"] == "running" and j["progress"] >= 0.05:
+            break
+        time.sleep(1)
+    r = admin.delete(f"/api/jobs/{running_id}")
+    check("delete a project while it is processing", r.status_code == 200, r.text[:120])
+    check("processing project is gone", admin.get(f"/api/jobs/{running_id}").status_code == 404)
+    if storage:
+        check("processing project's files removed from storage", wait_gone(job_path(storage, running_id)))
+
+    # Deleting a finished project removes the database records and every file, and frees the space.
+    size = sum(f.stat().st_size for f in jpath.rglob("*") if f.is_file()) if jpath and jpath.exists() else 0
+    r = admin.delete(f"/api/jobs/{job['id']}")
+    freed = r.json().get("freed_mb", 0) if r.status_code == 200 else 0
+    check("project delete", r.status_code == 200 and freed > 0, r.text[:120])
+    check("deleted project is gone", admin.get(f"/api/jobs/{job['id']}").status_code == 404
+          and all(x["id"] != job["id"] for x in admin.get("/api/jobs").json()))
+    check("deleted project's clips are gone", all(admin.get(x["files"]["video"]).status_code == 404
+                                                  for x in after["clips"]))
+    if jpath:
+        check("project folder removed from storage", not jpath.exists())
+        check("storage space reclaimed", abs(freed - size / 1048576) < 1.0, f"{freed} MB freed")
+
+    # The server keeps working normally after deletions.
+    r = upload(admin, video, {**opts, "max_clips": 1})
+    j = wait_job(admin, r.json()["id"]) if r.status_code == 200 else {}
+    clips_ok = [x for x in j.get("clips", []) if x["status"] == "done"]
+    check("upload after deletions produces a clip", j.get("status") == "done" and len(clips_ok) == 1,
+          f"{j.get('stage')} {j.get('error') or ''}")
+    if clips_ok:
+        ok, detail = playable(admin, clips_ok[0]["files"]["video"])
+        check("that clip is playable", ok, detail)
+
+
 def test_exports(c: httpx.Client, job: dict) -> None:
     clip = next((x for x in job["clips"] if x["status"] == "done"), None)
     if not check("at least one clip rendered", clip is not None, f"{len(job['clips'])} clips"):
@@ -87,7 +175,7 @@ def test_exports(c: httpx.Client, job: dict) -> None:
     r = c.get(clip["files"]["ass"])
     check("ASS export", r.status_code == 200 and "[Script Info]" in r.text)
     r = c.get(clip["files"]["meta"])
-    check("JSON metadata export", r.status_code == 200 and r.json().get("width") in (720, 1080, 1280, 1920))
+    check("JSON metadata export", r.status_code == 200 and r.json().get("width") in (720, 1280))
     r = c.get(clip["files"]["thumb"])
     check("thumbnail", r.status_code == 200 and r.content[:2] == b"\xff\xd8")
     for fmt, marker in (("srt", "-->"), ("vtt", "WEBVTT"), ("txt", ""), ("json", "segments")):
@@ -110,6 +198,8 @@ def main() -> int:
     ap.add_argument("--url", help="optional short public video link to test link downloads")
     ap.add_argument("--whisper-model", default="tiny")
     ap.add_argument("--phase", choices=["full", "start-job", "verify-resume"], default="full")
+    ap.add_argument("--storage", type=Path,
+                    help="the server's STORAGE_ROOT, if readable from here: deletions are checked on disk too")
     ap.add_argument("--expect", choices=["done", "failed"], help="verify-resume: expected final status")
     args = ap.parse_args()
     base = args.base.rstrip("/")
@@ -228,6 +318,7 @@ def main() -> int:
                 break
             time.sleep(3)
         check("re-render finished", c["status"] == "done", c.get("error") or "")
+        test_deletion(admin, user, admin.get(f"/api/jobs/{job['id']}").json(), args.video, opts, args.storage)
 
     # ---- per-user quota: active jobs ----
     quota = user.get("/api/system").json()["limits"]

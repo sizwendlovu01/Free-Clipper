@@ -167,6 +167,10 @@ def container_cpus() -> int:
 MEMORY_LIMIT_MB = container_memory_mb()
 # Under ~1.5 GB of RAM, render 720p-class output with lean encoder settings so ffmpeg fits beside the app.
 LOW_MEMORY = _bool("LOW_MEMORY_MODE", default=0 < MEMORY_LIMIT_MB < 1536)
+if LOW_MEMORY:
+    # ctranslate2's Intel MKL backend reserves ~200 MB at model load; its oneDNN path is as fast on small
+    # CPU plans and needs a fraction of that. Must be set before ctranslate2 is first used.
+    os.environ.setdefault("CT2_USE_MKL", "0")
 # 0 = auto: the CPUs granted to the container (capped at 2 in low-memory mode).
 FFMPEG_THREADS = max(0, _int("FFMPEG_THREADS", default=0)) or (
     min(2, container_cpus()) if LOW_MEMORY else min(8, container_cpus()))
