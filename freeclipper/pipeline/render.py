@@ -94,8 +94,65 @@ class _FaceDetector:
         return found
 
 
-def _face_track(src: Path, start: float, end: float, fps: float, src_w: int, crop_w: int) -> str | None:
-    """Return an ffmpeg expression for the crop x position that follows the main face, or None."""
+_SAMPLE_FPS = 10  # frames analysed per second: cut detection on every one, faces every 5th (0.5 s)
+_SAMPLE_W = 480
+
+
+def _face_track(src: Path, start: float, end: float, fps: float, src_w: int, crop_w: int,
+                src_h: int = 0) -> str | None:
+    """Return an ffmpeg expression for the crop x position that follows the main face, or None.
+
+    ffmpeg decodes the clip (multi-threaded, deblocking skipped: invisible at this size) and hands over
+    only 10 small frames per second, about half the CPU of decoding every full frame in Python."""
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return None
+    if not src_h:
+        return _face_track_cv2(src, start, end, fps, src_w, crop_w)
+    w, h = _SAMPLE_W, _even(src_h * _SAMPLE_W / src_w)
+    cmd = [config.FFMPEG, "-v", "error", *media.thread_args(), "-skip_loop_filter", "all", "-flags2", "+fast",
+           "-ss", f"{start:.3f}", "-i", str(src), "-t", f"{end - start:.3f}", "-an", "-sn",
+           "-vf", f"fps={_SAMPLE_FPS},scale={w}:{h}:flags=area", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
+    detector = _FaceDetector()
+    frame_bytes = w * h * 3
+    face_every = _SAMPLE_FPS // 2
+    samples: list[tuple[float, float | None, bool]] = []
+    prev_thumb = None
+    last_choice: float | None = None
+    with media.stream(cmd) as proc:
+        idx = 0
+        while True:
+            buf = proc.stdout.read(frame_bytes)
+            if len(buf) < frame_bytes:
+                break
+            frame = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 3)
+            thumb = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (32, 18), interpolation=cv2.INTER_AREA)
+            cut = prev_thumb is not None and float(np.mean(cv2.absdiff(thumb, prev_thumb))) > 28
+            prev_thumb = thumb
+            if cut or idx % face_every == 0:
+                faces = [f for f in detector.detect(frame) if f[1] > 0.002]
+                if cut:
+                    last_choice = None
+                choice = None
+                if faces:
+                    biggest = max(faces, key=lambda f: f[1])
+                    choice = biggest[0]
+                    if last_choice is not None:  # stay on the same person unless they became much smaller
+                        near = min(faces, key=lambda f: abs(f[0] - last_choice))
+                        if near[1] >= 0.5 * biggest[1]:
+                            choice = near[0]
+                    last_choice = choice
+                samples.append((idx / _SAMPLE_FPS, choice, cut))
+            idx += 1
+    if not samples:  # ffmpeg couldn't produce frames: fall back to OpenCV's own decoder
+        return _face_track_cv2(src, start, end, fps, src_w, crop_w)
+    return crop_expression(samples, src_w, crop_w)
+
+
+def _face_track_cv2(src: Path, start: float, end: float, fps: float, src_w: int, crop_w: int) -> str | None:
+    """Fallback tracker: decodes every frame with OpenCV."""
     try:
         import cv2
         import numpy as np
@@ -226,7 +283,7 @@ def _video_chain(src: Path, info: dict, start: float, end: float, out_w: int, ou
         x_expr = f"{(w - crop_w) / 2:.1f}"
         y_expr = f"{(h - crop_h) / 2:.1f}"
         if mode in ("auto", "face") and source > target:
-            tracked = _face_track(src, start, end, info["fps"], w, crop_w)
+            tracked = _face_track(src, start, end, info["fps"], w, crop_w, h)
             if tracked:
                 x_expr = tracked
         return (f"[0:v]crop={crop_w}:{crop_h}:{x_expr}:{y_expr},"

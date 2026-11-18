@@ -52,6 +52,30 @@ def forget_job(job_id: str) -> None:
         _killed.discard(job_id)
 
 
+class stream:
+    """Popen for reading a process's output as it runs, registered under the current job so cancelling
+    or deleting the job stops it. Use as a context manager; the process is always reaped."""
+
+    def __init__(self, cmd: list[str]):
+        self.job = getattr(_ctx, "job", None)
+        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if self.job:
+            with _procs_lock:
+                _procs.setdefault(self.job, set()).add(self.proc)
+
+    def __enter__(self) -> subprocess.Popen:
+        return self.proc
+
+    def __exit__(self, *exc) -> None:
+        if self.proc.poll() is None:
+            self.proc.kill()
+        self.proc.stdout.close()
+        self.proc.wait()
+        if self.job:
+            with _procs_lock:
+                _procs.get(self.job, set()).discard(self.proc)
+
+
 def run(cmd: list[str], cwd: Path | None = None, timeout: float | None = None) -> subprocess.CompletedProcess:
     job = getattr(_ctx, "job", None)
     popen = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
