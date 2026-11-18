@@ -66,7 +66,11 @@ def _shorten(s: str, max_words: int = 12) -> str:
     cut = " ".join(words[:max_words])
     # Prefer ending at a natural break inside the limit.
     m = re.search(r"^(.{20,}?)[,;:]\s", cut)
-    return (m.group(1) if m else cut).rstrip(",;:-") + "…"
+    kept = (m.group(1) if m else cut).rstrip(",;:-").split()
+    # Never end on a joining word ("…with", "…and the").
+    while len(kept) > 3 and re.sub(r"[^\w'’]", "", kept[-1]).lower() in SMALL_WORDS | {"i", "my", "his", "her", "their", "our", "your", "some", "this", "that", "was", "is", "are", "be"}:
+        kept.pop()
+    return " ".join(kept) + "…"
 
 
 def _score(sentence: str, position: float, english: bool) -> float:
@@ -95,36 +99,77 @@ def _score(sentence: str, position: float, english: bool) -> float:
     return score
 
 
-def viral_title(text: str, language: str | None = None) -> str:
-    """The clip's most clickable line, styled as a short-form post title."""
+SMALL_WORDS = {"a", "an", "the", "and", "but", "or", "nor", "for", "so", "yet", "as", "at", "by", "in", "of",
+               "off", "on", "per", "to", "up", "via", "vs", "with", "from", "into", "than"}
+# Curiosity leads for a line with no built-in hook (no question, number, "you" or power word).
+LEADS = ["Nobody Talks About This:", "Listen To This:", "Watch Until The End:", "This Is The Part That Matters:"]
+
+
+def _title_case(text: str) -> str:
+    """Headline capitalisation: every important word capitalised, short joining words lower case
+    (except first and last). Words already in capitals, and words with digits, are left as they are."""
+    words = text.split()
+    out = []
+    for k, w in enumerate(words):
+        core = re.sub(r"[^\w'’-]", "", w)
+        if not core or core.isupper() and len(core) > 1 or any(ch.isdigit() for ch in core):
+            out.append(w)
+            continue
+        lower = core.lower()
+        if lower in SMALL_WORDS and 0 < k < len(words) - 1:
+            new = lower
+        else:
+            new = "-".join(part[:1].upper() + part[1:].lower() for part in lower.split("-"))
+        out.append(w.replace(core, new, 1))
+    return " ".join(out)
+
+
+def _emphasize(text: str) -> str:
+    """Put one strong word in capitals: the eye lands on it first."""
+    words = text.split()
+    for k, w in enumerate(words):
+        core = re.sub(r"[^\w'’]", "", w)
+        if core.lower() in EMPHASIS:
+            words[k] = w.replace(core, core.upper(), 1)
+            break
+    return " ".join(words)
+
+
+def _has_hook(text: str) -> bool:
+    words = {w.lower() for w in _WORD.findall(text)}
+    return (text.rstrip().endswith(("?", "!")) or bool(re.search(r"\d", text))
+            or bool(words & {"you", "your", "you're"}) or bool(words & POWER_WORDS))
+
+
+def viral_title(text: str, language: str | None = None, index: int = 0) -> str:
+    """The clip's most clickable line, styled as a short-form post title: headline capitals, one word in
+    full caps, questions kept as questions, statements as a quote, and a curiosity lead when the line
+    has no hook of its own. `index` varies the lead between clips of the same video."""
     english = (language or "en").lower().startswith("en")
     sentences = _sentences(text)
     if not sentences:
-        return "Watch this"
+        return "Watch This"
     ranked = []
     for i, raw in enumerate(sentences):
         cleaned = _clean(raw)
         if cleaned:
             ranked.append((_score(cleaned, i / max(1, len(sentences) - 1), english), i, cleaned))
     if not ranked:
-        return "Watch this"
+        return "Watch This"
     ranked.sort(key=lambda r: (-r[0], r[1]))
-    best = _shorten(ranked[0][2])
-    best = best[0].upper() + best[1:]
+    line = ranked[0][2]
+    lead = LEADS[index % len(LEADS)] if english and not _has_hook(line) else ""
+    best = _shorten(line, 9 if lead else 12)
     question = best.endswith("?")
     best = best.rstrip(".")
     if english:
-        emphasized = False
-        words = best.split()
-        for k, w in enumerate(words):
-            core = re.sub(r"[^\w'’]", "", w).lower()
-            if not emphasized and core in EMPHASIS and k > 0:
-                words[k] = w.replace(re.sub(r"[^\w'’]", "", w), core.upper())
-                emphasized = True
-        best = " ".join(words)
+        best = _emphasize(_title_case(best))
+    else:
+        best = best[0].upper() + best[1:]
     if question:
         return best
-    return f"“{best}”"
+    quoted = f"“{best}”"
+    return f"{lead} {quoted}" if lead else quoted
 
 
 # Power words that are also good topics; every other power word is an adverb, verb or adjective.
@@ -171,6 +216,16 @@ def hashtags(text: str, corpus: Counter | None = None, language: str | None = No
             picks.append(w)
     tags = ["#" + re.sub(r"[^\w]", "", w) for w in picks]
     return [t for t in tags if len(t) > 3] + ["#fyp", "#viral"]
+
+
+def rewrite_for_clips(segments: list[dict], clips: list[dict], language: str | None) -> list[tuple[str, list[str]]]:
+    """(title, hashtags) for each clip, in order, from the transcript lines inside it."""
+    corpus = Counter(w.lower() for seg in segments for w in _WORD.findall(seg["text"]))
+    out = []
+    for i, c in enumerate(clips):
+        text = " ".join(seg["text"] for seg in segments if seg["end"] > c["start"] and seg["start"] < c["end"])
+        out.append((viral_title(text, language, i), hashtags(text, corpus, language)) if text.strip() else None)
+    return out
 
 
 def reason(text: str, start_text: str, loud: float, ends_clean: bool) -> str:

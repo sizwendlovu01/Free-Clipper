@@ -1056,6 +1056,37 @@ def api_job_cancel(job_id: str, user: dict = Depends(require_user)):
     return {"ok": True}
 
 
+@app.post("/api/jobs/{job_id}/retitle")
+def api_job_retitle(job_id: str, user: dict = Depends(require_user)):
+    """Rewrite every clip's title and hashtags with the current title writer, from the transcript.
+    Quick and safe: nothing is re-rendered (titles aren't part of the video)."""
+    from .pipeline import titles
+
+    own_job(job_id, user)
+    path = job_dir(job_id) / "transcript.json"
+    if not path.exists():
+        raise HTTPException(409, "This project has no transcript yet.")
+    transcript = json.loads(path.read_text(encoding="utf-8"))
+    clips = db.query("SELECT * FROM clips WHERE job_id = ? ORDER BY score DESC, idx", (job_id,))
+    updated = 0
+    for clip, new in zip(clips, titles.rewrite_for_clips(transcript.get("segments", []), clips,
+                                                          transcript.get("language"))):
+        if not new:
+            continue
+        title, tags = new
+        db.execute("UPDATE clips SET title = ?, hashtags = ? WHERE id = ?",
+                   (title[:120], json.dumps(tags, ensure_ascii=False), clip["id"]))
+        meta_path = job_dir(job_id) / "clips" / clip["id"] / "meta.json"
+        try:  # keep the downloadable metadata in step
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta.update(title=title[:120], hashtags=tags)
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (OSError, ValueError):
+            pass
+        updated += 1
+    return {"updated": updated}
+
+
 @app.post("/api/jobs/{job_id}/reanalyze")
 async def api_job_reanalyze(job_id: str, request: Request, user: dict = Depends(require_user)):
     job = own_job(job_id, user)

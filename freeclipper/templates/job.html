@@ -85,6 +85,7 @@ function render() {
     ${busy ? '<button class="danger" onclick="cancelJob(this)">Cancel</button>' : ""}
     ${job.clips_done ? `<a class="btn primary" href="/api/jobs/${JOB}/export.zip">Download all (.zip)</a>` : ""}
     ${["failed", "cancelled"].includes(job.status) ? '<button onclick="retry(this)">Retry</button>' : ""}
+    ${job.clip_count && !["queued", "running"].includes(job.status) ? '<button onclick="retitle(this)">Rewrite titles</button>' : ""}
     <button class="danger" onclick="delJob(this)">Delete project</button>`;
   let status = "";
   if (busy) status = `<div class="small" style="margin-bottom:6px">${esc(job.stage)} · ${(job.progress * 100).toFixed(0)}%</div>
@@ -189,6 +190,13 @@ function delClip(id, btn) {
 }
 function cancelJob(btn) {
   withBusy(btn, async () => { await api(`/api/jobs/${JOB}/cancel`, { method: "POST" }); toast("Cancelling…"); load(); }, "Cancelling…");
+}
+function retitle(btn) {
+  if (!confirm("Rewrite every clip's title and hashtags for more attention? Titles you edited by hand will be replaced. The videos don't change.")) return;
+  withBusy(btn, async () => {
+    const r = await api(`/api/jobs/${JOB}/retitle`, { method: "POST" });
+    toast(`Rewrote ${r.updated} title${r.updated === 1 ? "" : "s"}`); load();
+  }, "Rewriting…");
 }
 function retry(btn) {
   withBusy(btn, async () => { await api(`/api/jobs/${JOB}/reanalyze`, { method: "POST", body: {} }); toast("Queued again"); load(); }, "Queuing…");

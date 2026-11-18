@@ -332,7 +332,7 @@ def _write_post_text(picked: list[dict], segments: list[dict], loud, language: s
         energy = 0.0
         if loud is not None and int(p["end"]) > int(p["start"]):
             energy = float(loud[int(p["start"]):int(p["end"])].mean())
-        p["title"] = titles.viral_title(text, language)
+        p["title"] = titles.viral_title(text, language, index=picked.index(p))
         p["hashtags"] = titles.hashtags(text, corpus, language)
         p["reason"] = titles.reason(text, inside[0]["text"], energy,
                                     inside[-1]["text"].rstrip()[-1:] in ".?!\u3002\uff1f\uff01")
