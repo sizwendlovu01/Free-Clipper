@@ -85,12 +85,12 @@ SESSION_HTTPS_ONLY=true
 CLIENT_IP_HEADER=X-Real-IP
 ALLOW_SIGNUP=true
 MAX_CONCURRENT_JOBS=1
-MAX_WORKERS=1
-MAX_UPLOAD_SIZE_MB=500
-MAX_VIDEO_DURATION=1800
+MAX_WORKERS=0
+MAX_UPLOAD_SIZE_MB=4096
+MAX_VIDEO_DURATION=7200
 WHISPER_MODEL=base
 WHISPER_ALLOWED_MODELS=tiny,base,small
-USER_MAX_STORAGE_MB=500
+USER_MAX_STORAGE_MB=5120
 SOURCE_RETENTION_DAYS=3
 ANTHROPIC_API_KEY=
 ```
@@ -155,9 +155,9 @@ All optional except where noted. Names in brackets are older aliases that still 
 | `MAX_CONCURRENT_JOBS` | 1 | Videos processed at once. |
 | `MAX_WORKERS` (FC_RENDER_WORKERS) | 1 | Clips rendered in parallel per video (one ffmpeg each). |
 | `FFMPEG_THREADS` | 0 (auto) | Threads per ffmpeg process. |
-| `MAX_UPLOAD_SIZE_MB` (FC_MAX_UPLOAD_MB) | 500 | Upload limit (rejected before the upload is read). Railway requires uploads to finish within 5 minutes, so 500 MB needs about 2 MB/s upstream. |
-| `MAX_DOWNLOAD_SIZE_MB` | 2048 | Largest video fetched from a link. |
-| `MAX_VIDEO_DURATION` | 1800 | Seconds; checked before downloading. |
+| `MAX_UPLOAD_SIZE_MB` (FC_MAX_UPLOAD_MB) | 4096 | Upload limit (rejected before the upload is read). Railway requires uploads to finish within 5 minutes, so large files need a fast upstream connection (4 GB needs about 14 MB/s); links have no such limit. |
+| `MAX_DOWNLOAD_SIZE_MB` | 4096 | Largest video fetched from a link. |
+| `MAX_VIDEO_DURATION` | 7200 | Seconds (2 hours); checked before downloading. The UI shows this limit everywhere. |
 | `MAX_CLIPS_PER_JOB` | 10 | |
 | `JOB_TIMEOUT_SECONDS` | 5400 | |
 | `MAX_JOB_ATTEMPTS` | 2 | |
