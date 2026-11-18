@@ -124,3 +124,13 @@ function untilText(iso) {
 function retentionText(hours) {
   return hours % 24 === 0 ? `${hours / 24} day${hours === 24 ? "" : "s"}` : `${hours} hours`;
 }
+
+// Large, colour-coded virality score for a clip card.
+function scoreBadge(score) {
+  const s = Math.max(0, Math.min(100, Math.round(+score || 0)));
+  const tier = s >= 85 ? "hot" : s >= 70 ? "good" : "ok";
+  const label = s >= 85 ? "High viral potential" : s >= 70 ? "Good viral potential" : "Some viral potential";
+  return `<div class="vscore ${tier}" title="Virality score ${s} out of 100: ${label}" aria-label="Virality score ${s} out of 100">
+    <span class="num">${s}</span><span class="of">/100</span><span class="lbl">${label}</span>
+    <span class="meter" aria-hidden="true"><span style="width:${s}%"></span></span></div>`;
+}

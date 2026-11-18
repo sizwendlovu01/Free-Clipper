@@ -132,7 +132,8 @@ function clipCard(c, ratio) {
     : `<div class="ph" style="aspect-ratio:${ratio}">${c.status === "failed" ? "Render failed" : "Rendering..."}</div>`;
   return `${media}
     <div class="body">
-      <div class="row" style="gap:6px"><span class="badge score">${c.score}</span>
+      ${scoreBadge(c.score)}
+      <div class="row" style="gap:6px">
         <span class="small muted">${fmtTime(c.start)}-${fmtTime(c.end)} · ${c.duration.toFixed(0)}s</span>
         ${c.status !== "done" ? badge(c.status) : ""}</div>
       <div class="title">${esc(c.title)}</div>

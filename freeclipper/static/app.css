@@ -129,3 +129,15 @@ code { background: var(--panel-2); padding: 2px 6px; border-radius: 6px; font-si
 
 .danger-zone { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--danger); border-radius: 10px; }
 .danger-zone p { margin: 6px 0 10px; }
+
+/* Virality score on clip cards: big number, colour by tier, small meter. */
+.vscore { --c: var(--muted); display: grid; grid-template-columns: auto auto 1fr; align-items: baseline;
+  column-gap: 6px; row-gap: 6px; padding: 10px 12px; margin-bottom: 10px; border-radius: 12px;
+  background: var(--panel-2); border: 1px solid var(--line); border-left: 4px solid var(--c); }
+.vscore.hot { --c: var(--ok); } .vscore.good { --c: var(--accent); } .vscore.ok { --c: var(--warn); }
+.vscore .num { font-size: 34px; line-height: 1; font-weight: 800; color: var(--c); letter-spacing: -0.02em; }
+.vscore .of { font-size: 14px; font-weight: 600; color: var(--muted); }
+.vscore .lbl { justify-self: end; font-size: 13px; font-weight: 700; color: var(--c); text-align: right; }
+.vscore .meter { grid-column: 1 / -1; height: 6px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.vscore .meter span { display: block; height: 100%; border-radius: 99px; background: var(--c); }
+.clip .title { font-size: 17px; font-weight: 700; line-height: 1.3; }

@@ -20,8 +20,8 @@ function draw() {
     <div class="card clip" style="margin:0">
       <video controls preload="none" playsinline poster="${c.files.thumb}" src="${c.files.video}"></video>
       <div class="body">
-        <div class="row" style="gap:6px"><span class="badge score">${c.score}</span>
-          <span class="small muted">${c.duration.toFixed(0)}s</span></div>
+        ${scoreBadge(c.score)}
+        <div class="row" style="gap:6px"><span class="small muted">${c.duration.toFixed(0)}s</span></div>
         <div class="title">${esc(c.title)}</div>
         <a class="small" href="/jobs/${c.job_id}">${esc(c.job_title)}</a>
         ${c.hashtags.length ? `<div class="tags">${c.hashtags.map(esc).join(" ")}</div>` : ""}

@@ -19,6 +19,7 @@ from typing import Callable
 import numpy as np
 
 from .. import config
+from . import titles
 
 log = logging.getLogger("freeclipper.highlights")
 
@@ -267,7 +268,7 @@ def _select(candidates: list[dict], count: int, avoid: list[dict]) -> list[dict]
 
 
 def _heuristic(segments: list[dict], count: int, min_len: int, max_len: int, audio: Path | None,
-               duration: float, avoid: list[dict] | None = None) -> list[dict]:
+               duration: float, avoid: list[dict] | None = None, language: str | None = None) -> list[dict]:
     loud = _loudness_per_second(audio)
     candidates = []
     if not segments:
@@ -309,8 +310,32 @@ def _heuristic(segments: list[dict], count: int, min_len: int, max_len: int, aud
         lo = min(p["raw"] for p in picked)
         for p in picked:
             p["score"] = int(55 + 40 * ((p["raw"] - lo) / (hi - lo) if hi > lo else 1))
-            p["hashtags"] = []
+        _write_post_text(picked, segments, loud, language)
     return picked
+
+
+def _write_post_text(picked: list[dict], segments: list[dict], loud, language: str | None) -> None:
+    """Viral-style title, topic hashtags and a plain reason for each clip the built-in finder picked."""
+    from collections import Counter
+
+    if not segments:
+        for p in picked:
+            p["hashtags"] = ["#fyp", "#viral"]
+        return
+    corpus = Counter(w.lower() for seg in segments for w in titles._WORD.findall(seg["text"]))
+    for p in picked:
+        inside = [seg for seg in segments if seg["start"] >= p["start"] - 0.05 and seg["end"] <= p["end"] + 0.05]
+        if not inside:
+            p["hashtags"] = ["#fyp", "#viral"]
+            continue
+        text = " ".join(seg["text"] for seg in inside)
+        energy = 0.0
+        if loud is not None and int(p["end"]) > int(p["start"]):
+            energy = float(loud[int(p["start"]):int(p["end"])].mean())
+        p["title"] = titles.viral_title(text, language)
+        p["hashtags"] = titles.hashtags(text, corpus, language)
+        p["reason"] = titles.reason(text, inside[0]["text"], energy,
+                                    inside[-1]["text"].rstrip()[-1:] in ".?!\u3002\uff1f\uff01")
 
 
 # ---------------- boundary snapping ----------------
@@ -415,14 +440,15 @@ def find_highlights(transcript: dict, duration: float, count: int, min_len: int,
         if provider in ("claude", "ollama") and not segments:
             note = "No speech found; picked the most energetic moments instead."
         used = "heuristic"
-        raw = _heuristic(segments, count, min_len, max_len, audio, duration)
+        raw = _heuristic(segments, count, min_len, max_len, audio, duration, language=transcript.get("language"))
     clips = _snap(raw, segments, duration, min_len, max_len, count)
     if len(clips) < count:
         # The AI (or a first pass) returned fewer distinct moments than requested: top up with the next
         # best non-overlapping moments so the user gets the number they asked for whenever the video
         # is long enough.
         need = count - len(clips)
-        extra = _snap(_heuristic(segments, need, min_len, max_len, audio, duration, avoid=clips),
+        extra = _snap(_heuristic(segments, need, min_len, max_len, audio, duration, avoid=clips,
+                                      language=transcript.get("language")),
                       segments, duration, min_len, max_len, need)
         for c in extra:
             if len(clips) >= count:
