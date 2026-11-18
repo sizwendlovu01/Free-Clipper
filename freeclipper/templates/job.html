@@ -92,6 +92,7 @@ function render() {
   else if (job.status === "done") status = `<div class="small muted">${esc(job.stage)}</div>`;
   if (job.error) status += `<pre class="small" style="color:var(--danger);white-space:pre-wrap;margin:10px 0 0">${esc(job.error)}</pre>`;
   if (job.notes) status += `<div class="small" style="color:var(--warn);margin-top:8px">${esc(job.notes)}</div>`;
+  if (job.expires_at) status += `<div class="small" style="color:var(--warn);margin-top:8px">This project is temporary: it will be deleted permanently ${untilText(job.expires_at)} (${new Date(job.expires_at).toLocaleString()}). Download your clips before then${job.clips_done ? " with “Download all”" : ""}.</div>`;
   if (!job.source_available && job.status === "done") status += `<div class="small muted" style="margin-top:8px">The source video is no longer stored, so clips can't be re-rendered or added. Downloads still work.</div>`;
   document.getElementById("addclip").disabled = !job.source_available;
   document.getElementById("status").innerHTML = status;

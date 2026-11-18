@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from pathlib import Path
 
 from .. import config
@@ -18,13 +19,60 @@ _UNSAFE_FORMATS = {"hls", "applehttp", "concat", "ffconcat", "sdp", "rtp", "rtsp
                    "data", "tty", "image2", "image2pipe", "ffmetadata", "subviewer", "webvtt", "srt", "ass"}
 
 
+# Every ffmpeg/ffprobe process is registered under the job it works for, so cancelling or deleting a job
+# stops its processes at once instead of letting a long render run to the end.
+_ctx = threading.local()
+_procs: dict[str, set[subprocess.Popen]] = {}
+_procs_lock = threading.Lock()
+_killed: set[str] = set()
+
+
+def set_job(job_id: str | None) -> None:
+    """Tag the media processes started by this thread with a job id (None to clear)."""
+    _ctx.job = job_id
+
+
+def kill_job(job_id: str) -> int:
+    """Terminate every running media process of a job. Returns how many were stopped."""
+    with _procs_lock:
+        procs = list(_procs.get(job_id, ()))
+        if procs:
+            _killed.add(job_id)
+    for proc in procs:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    return len(procs)
+
+
+def forget_job(job_id: str) -> None:
+    with _procs_lock:
+        _procs.pop(job_id, None)
+        _killed.discard(job_id)
+
+
 def run(cmd: list[str], cwd: Path | None = None, timeout: float | None = None) -> subprocess.CompletedProcess:
+    job = getattr(_ctx, "job", None)
+    popen = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             encoding="utf-8", errors="replace")
+    if job:
+        with _procs_lock:
+            _procs.setdefault(job, set()).add(popen)
     try:
-        proc = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise MediaError(f"{Path(cmd[0]).name} took longer than {timeout:.0f}s and was stopped.") from exc
+        try:
+            out, err = popen.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            popen.kill()
+            popen.communicate()
+            raise MediaError(f"{Path(cmd[0]).name} took longer than {timeout:.0f}s and was stopped.") from exc
+    finally:
+        if job:
+            with _procs_lock:
+                _procs.get(job, set()).discard(popen)
+    proc = subprocess.CompletedProcess(cmd, popen.returncode, out, err)
+    if proc.returncode != 0 and job and job in _killed:
+        raise MediaError("Stopped because the project was cancelled or deleted.")
     if proc.returncode != 0:
         stderr = proc.stderr or ""
         if "No space left on device" in stderr:

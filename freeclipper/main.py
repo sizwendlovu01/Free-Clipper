@@ -121,6 +121,14 @@ async def guard(request: Request, call_next):
             return JSONResponse({"detail": f"Upload is larger than the {config.MAX_UPLOAD_MB} MB limit."}
                                 if request.url.path == "/api/jobs" else {"detail": "Request too large."},
                                 status_code=413)
+        if request.url.path == "/api/jobs" and length and length.isdigit():
+            from .worker import disk_free_mb, min_free_mb
+            # Refuse up front an upload that can't fit, rather than filling the disk part-way through.
+            room = disk_free_mb() - min_free_mb() - 200
+            if int(length) / 1048576 > room:
+                return JSONResponse({"detail": f"There isn't enough free storage for this file right now "
+                                               f"({max(0, room)} MB available). Try a smaller file later."},
+                                    status_code=507)
     response = await call_next(request)
     for key, value in SECURITY_HEADERS.items():
         response.headers.setdefault(key, value)
@@ -215,6 +223,12 @@ def job_json(j: dict, with_clips: bool = False) -> dict:
                    (j["id"],))
     out["thumb"] = f"/files/{thumb['id']}/thumb.jpg" if thumb else None
     out["source_available"] = find_source(j["id"]) is not None
+    out["expires_at"] = None
+    if config.PROJECT_RETENTION_HOURS and j["status"] in ("done", "failed", "cancelled"):
+        last = db.one("SELECT MAX(updated_at) AS t FROM clips WHERE job_id = ?", (j["id"],))["t"]
+        base = max(j["updated_at"], last or "")
+        out["expires_at"] = (datetime.fromisoformat(base) + timedelta(hours=config.PROJECT_RETENTION_HOURS)
+                             ).isoformat(timespec="seconds")
     if with_clips:
         out["clips"] = [clip_json(c) for c in db.query(
             "SELECT * FROM clips WHERE job_id = ? ORDER BY score DESC, idx", (j["id"],))]
@@ -342,7 +356,8 @@ def dashboard(request: Request):
         return page(request, "landing.html", None)
     return page(request, "dashboard.html", user, aspects=list(ASPECTS), whisper_models=config.WHISPER_MODELS,
                 default_model=config.WHISPER_MODEL, max_upload_mb=config.MAX_UPLOAD_MB,
-                max_video_minutes=config.MAX_VIDEO_SECONDS // 60, max_clips=config.MAX_CLIPS_PER_JOB)
+                max_video_minutes=config.MAX_VIDEO_SECONDS // 60, max_clips=config.MAX_CLIPS_PER_JOB,
+                retention_hours=config.PROJECT_RETENTION_HOURS)
 
 
 @app.get("/jobs/{job_id}")
@@ -535,6 +550,7 @@ def api_system(user: dict = Depends(require_user)):
         "fonts": sorted(p.name for p in config.FONTS_DIR.iterdir() if p.suffix.lower() in (".ttf", ".otf")),
         "limits": {
             "max_upload_mb": config.MAX_UPLOAD_MB, "max_video_seconds": config.MAX_VIDEO_SECONDS,
+            "retention_hours": config.PROJECT_RETENTION_HOURS,
             "max_clips_per_job": config.MAX_CLIPS_PER_JOB, "user_max_active_jobs": config.USER_MAX_ACTIVE_JOBS,
             "user_jobs_per_day": config.USER_JOBS_PER_DAY, "user_max_storage_mb": config.USER_MAX_STORAGE_MB,
             "quotas_apply": not user["is_admin"],
@@ -805,6 +821,12 @@ async def api_job_create(request: Request, file: UploadFile | None = File(None),
         except ValueError:
             shutil.rmtree(jdir, ignore_errors=True)
             raise HTTPException(413, f"File is larger than {config.MAX_UPLOAD_MB} MB.")
+        except OSError as e:  # e.g. the disk filled up during the upload
+            shutil.rmtree(jdir, ignore_errors=True)
+            raise HTTPException(507, "The server ran out of storage while saving the upload.") from e
+        except BaseException:  # upload aborted: leave nothing behind
+            shutil.rmtree(jdir, ignore_errors=True)
+            raise
         # Reject anything that isn't real audio/video, or is too long, before it takes a queue slot.
         try:
             info = await run_in_threadpool(media.probe, dest)

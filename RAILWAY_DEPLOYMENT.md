@@ -170,6 +170,9 @@ All optional except where noted. Names in brackets are older aliases that still 
 | `SIGNUPS_PER_IP_PER_DAY` | 5 | |
 | `CLEANUP_INTERVAL_MINUTES` | 60 | |
 | `TEMP_FILE_MAX_AGE_HOURS` | 6 | |
+| `PROJECT_RETENTION_HOURS` | 72 | Finished projects (database rows, source, clips, captions) are deleted permanently this long after they finish, for all users. Projects that are queued, processing or re-rendering are never touched; users see a countdown on each project. 0 = keep forever. |
+| `CLEANUP_INTERVAL_MINUTES` | 120 | How often cleanup runs (expired projects, orphaned files, temp files, abandoned jobs). |
+| `MAX_VIDEO_DURATION` | 7200 | Longest video in seconds (2 hours). Jobs get a time limit of 30 min + 2x the video length. |
 | `SOURCE_RETENTION_DAYS` | 0 (keep) | Delete source videos after N days. Clips stay; they just can't be re-rendered. |
 | `WHISPER_MODEL` | small | Default transcription model. `base` is the best fit for small servers. |
 | `WHISPER_ALLOWED_MODELS` | all | Restrict choices, e.g. `tiny,base,small` (large models need several GB of RAM). |

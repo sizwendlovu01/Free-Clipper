@@ -12,6 +12,7 @@
       <div class="drop" id="drop" role="button" tabindex="0" aria-label="Choose a video or audio file">
         <strong>Drop a video or audio file here</strong><br>
         <span class="small">or click to choose (up to {{ max_upload_mb }} MB and {{ max_video_minutes }} minutes)</span>
+        {% if retention_hours %}<div class="small muted" style="margin-top:6px">Projects are temporary: each one is deleted permanently {{ (retention_hours|int if retention_hours == retention_hours|int else retention_hours) }} hours after it finishes. Download your clips before then.</div>{% endif %}
         <div id="picked" class="small" style="margin-top:8px;color:var(--text)"></div>
       </div>
     </div>
@@ -218,6 +219,7 @@ async function loadJobs() {
         ${["queued", "running"].includes(j.status) ? `<div class="small muted">${esc(j.stage)}</div>
           <div class="progress" style="margin-top:6px"><div style="width:${(j.progress * 100).toFixed(1)}%"></div></div>` : ""}
         ${j.status === "failed" ? `<div class="small" style="color:var(--danger)">${esc((j.error || "").slice(0, 140))}</div>` : ""}
+        ${j.expires_at ? `<div class="small" style="color:${new Date(j.expires_at) - Date.now() < 86400000 ? "var(--warn)" : "var(--muted)"}">Deleted automatically ${untilText(j.expires_at)}</div>` : ""}
       </div>
     </a>`).join("");
   if (jobs.some(j => ["queued", "running"].includes(j.status))) setTimeout(loadJobs, 2500);

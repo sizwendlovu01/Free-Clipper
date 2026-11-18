@@ -111,3 +111,16 @@ async function copyText(text) {
   try { await navigator.clipboard.writeText(text); toast("Copied"); }
   catch { toast("Copy failed", true); }
 }
+
+// "in 2 days 5 h" style countdown to a project's automatic deletion.
+function untilText(iso) {
+  const ms = new Date(iso) - Date.now();
+  if (ms <= 0) return "soon";
+  const h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000) % 60;
+  if (h >= 48) return `in ${Math.floor(h / 24)} days`;
+  if (h >= 1) return `in ${h} h ${m} min`;
+  return `in ${Math.max(1, m)} min`;
+}
+function retentionText(hours) {
+  return hours % 24 === 0 ? `${hours / 24} day${hours === 24 ? "" : "s"}` : `${hours} hours`;
+}

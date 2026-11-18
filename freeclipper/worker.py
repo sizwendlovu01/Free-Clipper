@@ -175,6 +175,8 @@ class Runner:
         self._cancel: set[str] = set()
         self._deadline: dict[str, float] = {}
         self._active: set[str] = set()
+        self._started: dict[str, float] = {}
+        self._rerendering: set[str] = set()
         self._active_lock = threading.Lock()
         self._stopping = False
         self._threads: list[threading.Thread] = []
@@ -230,6 +232,7 @@ class Runner:
 
     def cancel(self, job_id: str) -> None:
         self._cancel.add(job_id)
+        media.kill_job(job_id)  # stop a long ffmpeg call now rather than when it finishes
 
     def is_active(self, job_id: str) -> bool:
         with self._active_lock:
@@ -294,8 +297,9 @@ class Runner:
         if self._stopping:
             self._requeue(job_id)
         elif time.monotonic() > self._deadline.get(job_id, float("inf")):
+            limit = self._deadline[job_id] - self._started.get(job_id, self._deadline[job_id])
             self._update(job_id, status="failed", stage="Failed",
-                         error=f"Processing took longer than the {fmt_duration(config.JOB_TIMEOUT_SECONDS)} "
+                         error=f"Processing took longer than the {fmt_duration(limit)} "
                                "limit and was stopped. Try a shorter video or fewer clips.")
         else:
             self._update(job_id, status="cancelled", stage="Cancelled")
@@ -314,7 +318,9 @@ class Runner:
             return
         with self._active_lock:
             self._active.add(job_id)
-        self._deadline[job_id] = time.monotonic() + config.JOB_TIMEOUT_SECONDS
+        self._started[job_id] = time.monotonic()
+        self._deadline[job_id] = self._started[job_id] + config.job_time_limit(job["duration"])
+        media.set_job(job_id)
         opts = json.loads(job["options"] or "{}")
         jdir = job_dir(job_id)
         jdir.mkdir(parents=True, exist_ok=True)
@@ -425,6 +431,8 @@ class Runner:
                 self._update(job_id, title=title[:200])
             self._check(job_id)
             self._update(job_id, duration=duration)
+            # Long videos get a longer time limit once their length is known.
+            self._deadline[job_id] = self._started[job_id] + config.job_time_limit(duration)
             timings["media"] = time.monotonic() - t0
 
             # 2. Transcript (local transcription only when no usable one exists yet)
@@ -543,8 +551,12 @@ class Runner:
                 self._clean_leftovers(jdir)
             self._cancel.discard(job_id)
             self._deadline.pop(job_id, None)
+            self._started.pop(job_id, None)
+            media.forget_job(job_id)
+            media.set_job(None)
             with self._active_lock:
                 self._active.discard(job_id)
+            transcribe.trim_memory()  # hand the job's memory back to the OS
             self.notify()
 
     @staticmethod
@@ -578,6 +590,7 @@ class Runner:
         transcribe.trim_memory()
 
         def work(c: dict) -> None:
+            media.set_job(job_id)  # pool threads: tag their ffmpeg processes with this job
             if self._stopped(job_id):
                 raise Cancelled()
             db.execute("UPDATE clips SET status = 'rendering', updated_at = ? WHERE id = ?", (db.now(), c["id"]))
@@ -617,6 +630,8 @@ class Runner:
         job = db.one("SELECT * FROM jobs WHERE id = ?", (clip["job_id"],))
         if not job:
             return
+        self._rerendering.add(clip_id)
+        media.set_job(job["id"])
         try:
             jdir = job_dir(job["id"])
             src = find_source(job["id"])
@@ -640,6 +655,10 @@ class Runner:
             log.exception("re-render failed for %s", clip_id)
             db.execute("UPDATE clips SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
                        (str(exc)[-2000:], db.now(), clip_id))
+        finally:
+            self._rerendering.discard(clip_id)
+            media.set_job(None)
+            transcribe.trim_memory()
 
     # ---- housekeeping ----
     def _janitor(self) -> None:
@@ -652,12 +671,70 @@ class Runner:
             for _ in range(config.CLEANUP_INTERVAL_MINUTES * 60):
                 if self._stopping:
                     return
+                self._watchdog()
                 time.sleep(1)
+
+    def _watchdog(self) -> None:
+        """Stop the processes of a job that ran past its time limit, so a hung ffmpeg call can't keep a
+        worker busy forever; the job then fails with a clear message."""
+        now = time.monotonic()
+        for job_id, deadline in list(self._deadline.items()):
+            if now > deadline and job_id not in self._cancel:
+                log.warning("job %s passed its time limit; stopping it", job_id)
+                media.kill_job(job_id)
+
+    def _expire_projects(self, stats: dict) -> None:
+        """Permanently delete finished projects older than PROJECT_RETENTION_HOURS, for every user.
+        Never touches queued or processing projects, or ones with a clip being re-rendered."""
+        if not config.PROJECT_RETENTION_HOURS:
+            return
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=config.PROJECT_RETENTION_HOURS)).isoformat(
+            timespec="seconds")
+        rows = db.query(
+            "SELECT id FROM jobs WHERE status IN ('done', 'failed', 'cancelled') AND updated_at < ? "
+            "AND NOT EXISTS (SELECT 1 FROM clips WHERE clips.job_id = jobs.id "
+            "AND (clips.status IN ('queued', 'rendering') OR clips.updated_at >= ?))", (cutoff, cutoff))
+        for row in rows:
+            if self.is_active(row["id"]):
+                continue
+            stats["expired_bytes"] += purge_job(row["id"])
+            stats["expired_projects"] += 1
+        if stats["expired_projects"]:
+            log.info("expired %d project(s), freed %.0f MB", stats["expired_projects"],
+                     stats["expired_bytes"] / 1048576)
+
+    def _recover_abandoned(self, stats: dict) -> None:
+        """A job marked 'running' that no worker is processing (a crashed thread) goes back to the queue,
+        or fails after MAX_JOB_ATTEMPTS; a clip stuck in 'rendering' is queued again."""
+        if self._stopping:
+            return
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat(timespec="seconds")
+        for j in db.query("SELECT id, attempts FROM jobs WHERE status = 'running' AND updated_at < ?", (stale,)):
+            if self.is_active(j["id"]):
+                continue
+            if j["attempts"] >= config.MAX_JOB_ATTEMPTS:
+                db.execute("UPDATE jobs SET status = 'failed', stage = 'Failed', error = ?, updated_at = ? "
+                           "WHERE id = ? AND status = 'running'",
+                           ("Processing stopped unexpectedly. Retry the project, or try fewer clips.",
+                            db.now(), j["id"]))
+            else:
+                db.execute("UPDATE jobs SET status = 'queued', stage = 'Waiting (worker restarted)', "
+                           "updated_at = ? WHERE id = ? AND status = 'running'", (db.now(), j["id"]))
+            stats["abandoned_jobs"] += 1
+        for c in db.query("SELECT id, job_id FROM clips WHERE status = 'rendering' AND updated_at < ?", (stale,)):
+            if c["id"] not in self._rerendering and not self.is_active(c["job_id"]):
+                db.execute("UPDATE clips SET status = 'queued' WHERE id = ? AND status = 'rendering'", (c["id"],))
+                stats["abandoned_jobs"] += 1
+        if stats["abandoned_jobs"]:
+            self.notify()
 
     def cleanup(self) -> dict:
         """Remove expired temporary files, leftovers and orphaned folders. Never touches rendered clips,
         captions or transcripts. Old source videos are removed only if SOURCE_RETENTION_DAYS is set."""
-        stats = {"temp_files": 0, "orphans": 0, "orphan_clips": 0, "leftover_dirs": 0, "sources": 0}
+        stats = {"expired_projects": 0, "expired_bytes": 0, "abandoned_jobs": 0, "temp_files": 0, "orphans": 0,
+                 "orphan_clips": 0, "leftover_dirs": 0, "sources": 0}
+        self._expire_projects(stats)
+        self._recover_abandoned(stats)
         cutoff = time.time() - config.TEMP_FILE_MAX_AGE_HOURS * 3600
         for p in sorted(config.TEMP_DIR.rglob("*"), key=lambda x: len(x.parts), reverse=True):
             try:
@@ -674,7 +751,9 @@ class Runner:
                 continue
             job = rows.get(d.name)
             if job is None:
-                if d.stat().st_mtime < time.time() - 3600:  # not a project being created right now
+                # Not a project being created right now (a long upload keeps writing its source file).
+                newest = max([d.stat().st_mtime] + [f.stat().st_mtime for f in d.rglob("*") if f.exists()])
+                if newest < time.time() - 3600:
                     shutil.rmtree(d, ignore_errors=True)
                     stats["orphans"] += 1
                 continue

@@ -121,8 +121,15 @@ SHUTDOWN_GRACE_SECONDS = _int("SHUTDOWN_GRACE_SECONDS", default=20)
 # Videos processed at the same time. Never derived from the CPU count: inside containers that reports
 # the host's CPUs, not the service's allocation.
 MAX_CONCURRENT_JOBS = max(1, _int("MAX_CONCURRENT_JOBS", "FC_MAX_CONCURRENT_JOBS", default=1))
-# Clips rendered in parallel within one project (each is one ffmpeg process).
-RENDER_WORKERS = max(1, _int("MAX_WORKERS", "FC_RENDER_WORKERS", default=1))
+
+
+def _float(*names: str, default: float) -> float:
+    try:
+        return float(_env(*names, default=str(default)))
+    except ValueError:
+        return default
+
+
 def _cgroup_value(*paths: str) -> str:
     for p in paths:
         try:
@@ -171,13 +178,20 @@ if LOW_MEMORY:
     # ctranslate2's Intel MKL backend reserves ~200 MB at model load; its oneDNN path is as fast on small
     # CPU plans and needs a fraction of that. Must be set before ctranslate2 is first used.
     os.environ.setdefault("CT2_USE_MKL", "0")
-# 0 = auto: the CPUs granted to the container (capped at 2 in low-memory mode).
+CPUS = container_cpus()
+# Clips rendered in parallel within one project (each is one ffmpeg process, ~300 MB at 720p).
+# 0 = auto: one per two granted CPUs, up to 4, as far as memory allows (1 in low-memory mode).
+_mem_slots = max(1, (MEMORY_LIMIT_MB - 1500) // 500) if MEMORY_LIMIT_MB else 4
+RENDER_WORKERS = max(0, _int("MAX_WORKERS", "FC_RENDER_WORKERS", default=0)) or (
+    1 if LOW_MEMORY else max(1, min(4, CPUS // 2, _mem_slots)))
+# Threads per ffmpeg process. 0 = auto: the granted CPUs shared between parallel renders.
 FFMPEG_THREADS = max(0, _int("FFMPEG_THREADS", default=0)) or (
-    min(2, container_cpus()) if LOW_MEMORY else min(8, container_cpus()))
-MAX_UPLOAD_MB = max(1, _int("MAX_UPLOAD_SIZE_MB", "FC_MAX_UPLOAD_MB", default=500))
-MAX_DOWNLOAD_MB = max(50, _int("MAX_DOWNLOAD_SIZE_MB", default=2048))
-MAX_VIDEO_SECONDS = max(30, _int("MAX_VIDEO_DURATION", default=1800))
+    min(2, CPUS) if LOW_MEMORY else max(1, min(8, CPUS // RENDER_WORKERS)))
+MAX_UPLOAD_MB = max(1, _int("MAX_UPLOAD_SIZE_MB", "FC_MAX_UPLOAD_MB", default=4096))
+MAX_DOWNLOAD_MB = max(50, _int("MAX_DOWNLOAD_SIZE_MB", default=4096))
+MAX_VIDEO_SECONDS = max(30, _int("MAX_VIDEO_DURATION", default=7200))
 MAX_CLIPS_PER_JOB = max(1, _int("MAX_CLIPS_PER_JOB", default=10))
+# Minimum time limit per job; long videos get more (see job_time_limit).
 JOB_TIMEOUT_SECONDS = max(300, _int("JOB_TIMEOUT_SECONDS", default=5400))
 MAX_JOB_ATTEMPTS = max(1, _int("MAX_JOB_ATTEMPTS", default=2))
 MAX_QUEUED_JOBS = max(1, _int("MAX_QUEUED_JOBS", default=20))
@@ -191,7 +205,10 @@ USER_MAX_STORAGE_MB = max(100, _int("USER_MAX_STORAGE_MB", default=2048))
 SIGNUPS_PER_IP_PER_DAY = max(1, _int("SIGNUPS_PER_IP_PER_DAY", default=5))
 
 # ---------------- cleanup ----------------
-CLEANUP_INTERVAL_MINUTES = max(5, _int("CLEANUP_INTERVAL_MINUTES", default=60))
+CLEANUP_INTERVAL_MINUTES = max(1, _int("CLEANUP_INTERVAL_MINUTES", default=120))
+# Projects are deleted permanently (database rows and every file) this many hours after they finish,
+# across all users. Queued, processing and re-rendering projects are never touched. 0 = keep forever.
+PROJECT_RETENTION_HOURS = max(0.0, _float("PROJECT_RETENTION_HOURS", default=72.0))
 TEMP_FILE_MAX_AGE_HOURS = max(1, _int("TEMP_FILE_MAX_AGE_HOURS", default=6))
 # Delete a project's *source* video this many days after processing (0 = keep forever). Rendered clips,
 # captions and transcripts are never deleted by cleanup; without the source, clips can't be re-rendered.
@@ -286,3 +303,9 @@ def resolve_provider(requested: str | None) -> str:
     if has_claude_credentials():
         return "claude"
     return "ollama" if ollama_model_available() else "heuristic"
+
+
+def job_time_limit(duration: float | None) -> float:
+    """Seconds a job may run: at least JOB_TIMEOUT_SECONDS, more for long videos (a 2-hour video needs
+    time to download, transcribe and render on a few CPUs)."""
+    return max(float(JOB_TIMEOUT_SECONDS), 1800.0 + 2.0 * float(duration or 0))
