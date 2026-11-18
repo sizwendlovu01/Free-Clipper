@@ -142,7 +142,8 @@ function clipCard(c, ratio) {
       ${c.reason || c.hook ? `<details><summary>Why this clip</summary>${c.hook ? `<p><b>Hook:</b> ${esc(c.hook)}</p>` : ""}${esc(c.reason)}</details>` : ""}
       ${c.error ? `<details open><summary style="color:var(--danger)">Error</summary><pre style="white-space:pre-wrap">${esc(c.error)}</pre></details>` : ""}
       <div class="actions">
-        ${c.status === "done" ? `<a class="btn sm primary" href="${c.files.video}&download=1">MP4</a>
+        ${c.status === "done" ? `<button class="sm share" onclick="shareClip(clipById('${c.id}'), this)">Share</button>
+          <a class="btn sm primary" href="${c.files.video}&download=1">MP4</a>
           <a class="btn sm" href="${c.files.srt}&download=1">SRT</a>
           <a class="btn sm" href="${c.files.vtt}&download=1">VTT</a>` : ""}
         <button class="sm" onclick="editClip('${c.id}')">Edit</button>

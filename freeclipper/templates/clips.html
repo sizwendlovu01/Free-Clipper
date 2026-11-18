@@ -25,7 +25,8 @@ function draw() {
         <div class="title">${esc(c.title)}</div>
         <a class="small" href="/jobs/${c.job_id}">${esc(c.job_title)}</a>
         ${c.hashtags.length ? `<div class="tags">${c.hashtags.map(esc).join(" ")}</div>` : ""}
-        <div class="actions"><a class="btn sm primary" href="${c.files.video}&download=1">MP4</a>
+        <div class="actions"><button class="sm share" onclick="shareClip(all.find(x => x.id === '${c.id}'), this)">Share</button>
+          <a class="btn sm primary" href="${c.files.video}&download=1">MP4</a>
           <a class="btn sm" href="${c.files.srt}&download=1">SRT</a>
           <a class="btn sm" href="${c.files.meta}&download=1">JSON</a></div>
       </div>

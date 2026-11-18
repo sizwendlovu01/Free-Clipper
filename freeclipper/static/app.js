@@ -134,3 +134,69 @@ function scoreBadge(score) {
     <span class="num">${s}</span><span class="of">/100</span><span class="lbl">${label}</span>
     <span class="meter" aria-hidden="true"><span style="width:${s}%"></span></span></div>`;
 }
+
+// ---- Share a clip to TikTok, Instagram, YouTube... ----
+// Phones (and some desktops) get the system share sheet with the video attached: pick the app and post.
+// Elsewhere a panel downloads the clip and opens each platform's upload page. The title and hashtags are
+// copied first, so the user just pastes them as the caption.
+const UPLOAD_PAGES = [
+  ["TikTok", "https://www.tiktok.com/upload"],
+  ["YouTube Shorts", "https://studio.youtube.com/"],
+  ["Instagram Reels", "https://www.instagram.com/"],
+];
+const _shareFiles = new Map();  // clip id -> prepared File (so a second tap shares instantly)
+function postText(c) { return `${c.title}\n\n${(c.hashtags || []).join(" ")}`.trim(); }
+function clipFileName(c) {
+  const base = (c.title || "clip").replace(/[“”"]/g, "").replace(/[^\w\s-]+/g, "").trim()
+    .replace(/\s+/g, "-").slice(0, 60) || "clip";
+  return base + ".mp4";
+}
+async function shareClip(c, btn) {
+  const text = postText(c);
+  try { await navigator.clipboard.writeText(text); } catch (_) {}  // caption ready to paste
+  const canShareFiles = !!(navigator.canShare && window.File);
+  if (!canShareFiles) return sharePanel(c);
+  let file = _shareFiles.get(c.id);
+  if (!file) {
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = "Preparing…";
+    try {
+      const r = await fetch(c.files.video, { credentials: "same-origin" });
+      if (!r.ok) throw new Error();
+      file = new File([await r.blob()], clipFileName(c), { type: "video/mp4" });
+      _shareFiles.set(c.id, file);
+    } catch (_) {
+      btn.disabled = false; btn.textContent = label;
+      return toast("Couldn't load the clip. Check your connection and try again.", true);
+    }
+    btn.disabled = false; btn.textContent = label;
+  }
+  if (!navigator.canShare({ files: [file] })) return sharePanel(c);
+  try {
+    await navigator.share({ files: [file], title: c.title, text });
+    toast("Caption copied: paste it in the app before posting");
+  } catch (err) {
+    if (err && err.name === "AbortError") return;  // the user closed the share sheet
+    if (err && err.name === "NotAllowedError") {
+      // Some browsers only open the share sheet straight from a tap; the clip is ready now.
+      btn.textContent = "Tap to share";
+      return toast("Clip ready: tap Share again");
+    }
+    sharePanel(c);
+  }
+}
+function sharePanel(c) {
+  const m = modal(`<h2>Post this clip</h2>
+    <p class="small muted">The title and hashtags are copied. Download the clip, open the app, upload it and paste the caption.</p>
+    <div class="field"><label>Caption</label><textarea id="sharetext" rows="3" readonly>${esc(postText(c))}</textarea></div>
+    <div class="row" style="margin-bottom:12px">
+      <a class="btn primary" href="${c.files.video}&download=1">Download MP4</a>
+      <button id="sharecopy">Copy caption</button>
+    </div>
+    <div class="share-targets">${UPLOAD_PAGES.map(([name, url]) =>
+      `<a class="btn" href="${url}" target="_blank" rel="noopener">Open ${name}</a>`).join("")}</div>
+    <p class="small muted" style="margin-top:12px">On a phone, the Share button sends the video straight to the app instead.</p>
+    <div class="row" style="margin-top:8px"><button id="shareclose">Close</button></div>`);
+  m.querySelector("#sharecopy").onclick = () => copyText(postText(c));
+  m.querySelector("#shareclose").onclick = () => m.remove();
+}
