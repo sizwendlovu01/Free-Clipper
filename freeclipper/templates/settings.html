@@ -98,12 +98,30 @@ api("/api/system").then(s => {
     <p>Limits: videos up to ${esc(s.limits.video_limit)}, uploads up to ${esc(s.limits.upload_limit)}, ${s.limits.max_clips_per_job} clips per video${s.limits.retention_text ? `, projects kept ${esc(s.limits.retention_text)}` : ""}.
        ${s.limits.quotas_apply ? `Your usage: ${s.usage.jobs_last_24h}/${s.limits.user_jobs_per_day} videos in 24 h, ${s.usage.storage_mb}/${s.limits.user_max_storage_mb} MB storage.` : "Quotas don't apply to admins."}</p>
     ${s.disk_free_mb !== undefined ? `<p>Storage: <code>${esc(s.data_dir)}</code>, ${s.disk_free_mb} MB free of ${s.disk_total_mb} MB.</p>
-      <p><a class="btn sm" href="/api/admin/backup">Download database backup</a> <button class="sm" id="cleanup">Run cleanup now</button></p>` : ""}`;
+      <p><a class="btn sm" href="/api/admin/backup">Download database backup</a> <button class="sm" id="cleanup">Run cleanup now</button></p>
+      <div class="danger-zone">
+        <b>Free all storage</b>
+        <p class="small muted">Permanently deletes every project, clip, upload and temporary file for all users, and stops anything processing. Accounts, styles, branding and YouTube cookies are kept. This can't be undone.</p>
+        <button class="sm danger" id="purgeall">Delete all projects and clips</button>
+      </div>` : ""}`;
   const cl = document.getElementById("cleanup");
   if (cl) cl.onclick = e => withBusy(e.currentTarget, async () => {
     const r = await api("/api/admin/cleanup", { method: "POST" });
     toast(`Cleanup done: ${r.temp_files} temp files removed, ${r.disk_free_mb} MB free`);
   }, "Cleaning…");
+  const pa = document.getElementById("purgeall");
+  if (pa) pa.onclick = e => {
+    const typed = prompt("This permanently deletes EVERY project, clip and upload for ALL users, and stops anything processing.
+
+Type DELETE to confirm.");
+    if (typed === null) return;
+    if (typed.trim() !== "DELETE") return toast("Nothing deleted: you must type DELETE.", true);
+    withBusy(e.currentTarget, async () => {
+      const r = await api("/api/admin/purge-all", { method: "POST", body: { confirm: "DELETE" } });
+      toast(`Deleted ${r.projects_deleted} project(s), freed ${r.freed_mb} MB. ${r.disk_free_mb} MB free now.`);
+      setTimeout(() => location.reload(), 1500);
+    }, "Deleting…");
+  };
   if ($("fonts")) $("fonts").textContent = s.fonts.length ? "Installed: " + s.fonts.join(", ") : "No custom fonts uploaded.";
 });
 

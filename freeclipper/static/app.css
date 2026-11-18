@@ -126,3 +126,6 @@ code { background: var(--panel-2); padding: 2px 6px; border-radius: 6px; font-si
 .limit-note { margin: -4px 0 14px; padding: 8px 12px; border-radius: 10px; font-size: 14px;
   background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--accent); }
 .limit-note strong { color: var(--text); }
+
+.danger-zone { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--danger); border-radius: 10px; }
+.danger-zone p { margin: 6px 0 10px; }

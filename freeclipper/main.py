@@ -627,6 +627,17 @@ async def api_cleanup(admin: dict = Depends(require_admin)):
     return await run_in_threadpool(runner.cleanup)
 
 
+@app.post("/api/admin/purge-all")
+async def api_purge_all(request: Request, admin: dict = Depends(require_admin)):
+    """Permanently delete every project, clip and upload for all users, to free the whole volume.
+    The request must carry {"confirm": "DELETE"} so it can't be triggered by accident."""
+    body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+    if (body or {}).get("confirm") != "DELETE":
+        raise HTTPException(400, 'Type DELETE to confirm.')
+    log.warning("admin %s requested deletion of all projects", admin["username"])
+    return await run_in_threadpool(runner.purge_all)
+
+
 @app.post("/api/admin/youtube-cookies")
 async def api_youtube_cookies(file: UploadFile = File(...), admin: dict = Depends(require_admin)):
     """Store a Netscape-format cookies.txt for YouTube downloads. Never served back to anyone."""

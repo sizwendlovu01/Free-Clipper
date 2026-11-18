@@ -674,6 +674,41 @@ class Runner:
                 self._watchdog()
                 time.sleep(1)
 
+    def purge_all(self) -> dict:
+        """Admin "delete everything": stop all processing, then permanently delete every project, clip,
+        upload and temporary file for all users. Accounts, styles, branding, cookies and the speech
+        models are kept."""
+        before = disk_free_mb()
+        # Nothing new may start: queued projects and queued re-renders are cancelled first.
+        db.execute("UPDATE jobs SET status = 'cancelled', stage = 'Cancelled' WHERE status = 'queued'")
+        db.execute("UPDATE clips SET status = 'failed' WHERE status = 'queued'")
+        with self._active_lock:
+            active = set(self._active)
+        active.update(j["id"] for j in db.query("SELECT id FROM jobs WHERE status = 'running'"))
+        for job_id in active:
+            self.stop_and_wait(job_id, timeout=30)
+        projects = freed = 0
+        for j in db.query("SELECT id FROM jobs"):
+            media.kill_job(j["id"])  # a re-render in progress
+            freed += purge_job(j["id"])
+            projects += 1
+        # Anything left on disk without a project (interrupted uploads, leftovers) and all temp files.
+        for d in config.JOBS_DIR.iterdir():
+            freed += dir_size(d) if d.is_dir() else 0
+            shutil.rmtree(d, ignore_errors=True) if d.is_dir() else d.unlink(missing_ok=True)
+        for f in config.TEMP_DIR.rglob("*"):
+            try:
+                if f.is_file():
+                    freed += f.stat().st_size
+                    f.unlink()
+            except OSError:
+                pass
+        transcribe.trim_memory()
+        after = disk_free_mb()
+        log.warning("admin deleted all projects: %d project(s), %.0f MB freed", projects, freed / 1048576)
+        return {"projects_deleted": projects, "freed_mb": round(freed / 1048576, 1),
+                "disk_free_before_mb": before, "disk_free_mb": after}
+
     def _watchdog(self) -> None:
         """Stop the processes of a job that ran past its time limit, so a hung ffmpeg call can't keep a
         worker busy forever; the job then fails with a clear message."""
