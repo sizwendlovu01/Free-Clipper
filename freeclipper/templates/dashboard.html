@@ -2,6 +2,7 @@
 {% block content %}
 <div class="card">
   <h2>New project</h2>
+  <p class="limit-note">Upload videos up to <strong>{{ video_limit }}</strong> long (files up to {{ upload_limit }}), or paste a link.</p>
   <div class="tabs">
     <button type="button" class="active" data-tab="upload">Upload video</button>
     <button type="button" data-tab="link">Paste a link</button>
@@ -11,13 +12,13 @@
       <input id="file" type="file" accept="video/*,audio/*" class="hidden">
       <div class="drop" id="drop" role="button" tabindex="0" aria-label="Choose a video or audio file">
         <strong>Drop a video or audio file here</strong><br>
-        <span class="small">or click to choose (up to {{ max_upload_mb }} MB and {{ max_video_minutes }} minutes)</span>
-        {% if retention_hours %}<div class="small muted" style="margin-top:6px">Projects are temporary: each one is deleted permanently {{ (retention_hours|int if retention_hours == retention_hours|int else retention_hours) }} hours after it finishes. Download your clips before then.</div>{% endif %}
+        <span class="small">or click to choose: videos up to {{ video_limit }}, files up to {{ upload_limit }}</span>
+        {% if retention_text %}<div class="small muted" style="margin-top:6px">Projects are temporary: each one is deleted permanently {{ retention_text }} after it finishes. Download your clips before then.</div>{% endif %}
         <div id="picked" class="small" style="margin-top:8px;color:var(--text)"></div>
       </div>
     </div>
     <div id="tab-link" class="hidden field">
-      <label for="url">Video link (YouTube, Vimeo, X, Twitch VOD, direct .mp4 and ~1800 other sites via yt-dlp)</label>
+      <label for="url">Video link up to {{ video_limit }} long (YouTube, Vimeo, X, Twitch VOD, direct .mp4 and ~1800 other sites via yt-dlp)</label>
       <input id="url" type="url" placeholder="https://...">
     </div>
 
@@ -161,7 +162,7 @@ document.getElementById("newjob").addEventListener("submit", e => {
     const f = fileInput.files[0];
     if (!f) return toast("Choose a video or audio file first", true);
     if (f.size > MAX_UPLOAD_MB * 1024 * 1024)
-      return toast(`This file is ${(f.size / 1048576).toFixed(0)} MB; the limit is ${MAX_UPLOAD_MB} MB.`, true);
+      return toast(`This file is ${(f.size / 1048576).toFixed(0)} MB; the limit is {{ upload_limit }}.`, true);
     if (f.size === 0) return toast("This file is empty.", true);
     fd.append("file", f, f.name || "video.mp4");
   } else {
@@ -193,7 +194,7 @@ document.getElementById("newjob").addEventListener("submit", e => {
     if (xhr.status >= 200 && xhr.status < 300 && data.id) { location.href = `/jobs/${data.id}`; return; }
     finish();
     if (xhr.status === 401) { location.href = "/login"; return; }
-    toast(data.detail || (xhr.status === 413 ? `The file is larger than ${MAX_UPLOAD_MB} MB.` :
+    toast(data.detail || (xhr.status === 413 ? `The file is larger than {{ upload_limit }}.` :
       xhr.status >= 500 ? "The server had a problem. Please try again." : "Upload failed. Please try again."), true);
   };
   xhr.onerror = () => { finish(); toast("Connection lost during the upload. Check your connection and try again.", true); };

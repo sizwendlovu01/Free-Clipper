@@ -333,10 +333,36 @@ def _asset_version() -> str:
 ASSET_VERSION = _asset_version()
 
 
+def human_duration(seconds: float) -> str:
+    """7200 -> "2 hours", 5400 -> "1 hour 30 minutes", 1800 -> "30 minutes"."""
+    minutes = int(round(seconds / 60))
+    hours, rest = divmod(minutes, 60)
+    parts = ([f"{hours} hour{'s' if hours != 1 else ''}"] if hours else []) +             ([f"{rest} minute{'s' if rest != 1 else ''}"] if rest or not hours else [])
+    return " ".join(parts)
+
+
+def human_size(mb: float) -> str:
+    """4096 -> "4 GB", 1536 -> "1.5 GB", 500 -> "500 MB"."""
+    if mb >= 1024:
+        gb = mb / 1024
+        return f"{gb:.0f} GB" if gb == int(gb) else f"{gb:.1f} GB"
+    return f"{mb:.0f} MB"
+
+
+def limits_text() -> dict:
+    hours = config.PROJECT_RETENTION_HOURS
+    retention = ""
+    if hours:
+        retention = (f"{hours / 24:.0f} day{'s' if hours != 24 else ''}" if hours % 24 == 0
+                     else human_duration(hours * 3600))
+    return {"video_limit": human_duration(config.MAX_VIDEO_SECONDS), "upload_limit": human_size(config.MAX_UPLOAD_MB),
+            "retention_text": retention}
+
+
 def page(request: Request, name: str, user: dict | None, **ctx):
     return templates.TemplateResponse(
         request, name, {"brand": brand(), "user": user, "allow_signup": config.ALLOW_SIGNUP,
-                        "v": ASSET_VERSION, **ctx})
+                        "v": ASSET_VERSION, **limits_text(), **ctx})
 
 
 def page_user(request: Request) -> dict | RedirectResponse:
@@ -550,7 +576,7 @@ def api_system(user: dict = Depends(require_user)):
         "fonts": sorted(p.name for p in config.FONTS_DIR.iterdir() if p.suffix.lower() in (".ttf", ".otf")),
         "limits": {
             "max_upload_mb": config.MAX_UPLOAD_MB, "max_video_seconds": config.MAX_VIDEO_SECONDS,
-            "retention_hours": config.PROJECT_RETENTION_HOURS,
+            "retention_hours": config.PROJECT_RETENTION_HOURS, **limits_text(),
             "max_clips_per_job": config.MAX_CLIPS_PER_JOB, "user_max_active_jobs": config.USER_MAX_ACTIVE_JOBS,
             "user_jobs_per_day": config.USER_JOBS_PER_DAY, "user_max_storage_mb": config.USER_MAX_STORAGE_MB,
             "quotas_apply": not user["is_admin"],

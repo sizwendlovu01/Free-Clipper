@@ -122,3 +122,7 @@ code { background: var(--panel-2); padding: 2px 6px; border-radius: 6px; font-si
   .job-head #actions { width: 100%; }
   #toasts { left: 16px; right: 16px; bottom: 16px; max-width: none; align-items: stretch; }
 }
+
+.limit-note { margin: -4px 0 14px; padding: 8px 12px; border-radius: 10px; font-size: 14px;
+  background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--accent); }
+.limit-note strong { color: var(--text); }

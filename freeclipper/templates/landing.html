@@ -7,7 +7,7 @@
   <div class="wrap">
     <span class="eyebrow">AI video clipping and captioning</span>
     <h1>Turn long videos into<br><span class="hl">viral-ready clips</span> in minutes</h1>
-    <p class="sub">Paste a link or upload a file. {{ brand.app_name }} finds the strongest moments, adds animated captions
+    <p class="sub">Paste a link or upload a video up to {{ video_limit }} long. {{ brand.app_name }} finds the strongest moments, adds animated captions
       and reframes them for Shorts, TikTok and Reels, all on your own server.</p>
 
     <form class="drop js-start" novalidate>
@@ -241,8 +241,8 @@
           You can then edit any clip and re-render it.</p></details>
       <details><summary>What types of videos can I upload?</summary>
         <p>Most video and audio files (MP4, MOV, MKV, WebM, MP3, WAV and more), and links from YouTube and many other video
-          sites. Talking-head content such as podcasts, interviews, streams and lectures works best. Upload size and
-          length limits are shown on your dashboard.</p></details>
+          sites. Videos can be up to {{ video_limit }} long, and uploaded files up to {{ upload_limit }}. Talking-head content
+          such as podcasts, interviews, streams and lectures works best.</p></details>
       <details><summary>Which languages are supported?</summary>
         <p>Transcription works in 99 languages and can detect the language automatically. Captions can also be translated
           to English.</p></details>
