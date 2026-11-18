@@ -152,54 +152,138 @@ function options() {
     provider: v("provider"), captions: c("captions"), loudnorm: c("loudnorm"), translate: c("translate"), prompt: v("prompt") };
 }
 
+// ---- uploads: sent in small pieces so a slow or dropped connection never loses the whole upload ----
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const fmtBytes = b => b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GB" : (b / 1048576).toFixed(0) + " MB";
+async function jsonReq(method, url, body) {
+  let r;
+  try {
+    r = await fetch(url, { method, credentials: "same-origin",
+      headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  } catch (_) { return { status: 0, data: {} }; }
+  let data = {}; try { data = await r.json(); } catch (_) {}
+  return { status: r.status, data };
+}
+function putPiece(url, blob, onProgress) {
+  return new Promise(resolve => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.timeout = 240000;  // one piece; well inside proxy request limits
+    xhr.upload.onprogress = ev => { if (ev.lengthComputable) onProgress(ev.loaded); };
+    xhr.onload = () => { let d = {}; try { d = JSON.parse(xhr.responseText); } catch (_) {} resolve({ status: xhr.status, data: d }); };
+    xhr.onerror = xhr.ontimeout = () => resolve({ status: 0, data: {} });
+    xhr.send(blob);
+  });
+}
+const storeGet = k => { try { return localStorage.getItem(k); } catch (_) { return null; } };
+const storeSet = (k, v) => { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (_) {} };
+
+// Uploads the file and returns its upload id. Picking the same file again after a failure or a page
+// reload continues from the last piece the server has.
+async function uploadFile(f, show) {
+  const key = `fc-upload:${f.name}:${f.size}:${f.lastModified}`;
+  let up = null;
+  const saved = storeGet(key);
+  if (saved) {
+    const r = await jsonReq("GET", `/api/uploads/${saved}`);
+    if (r.status === 200 && r.data.size === f.size) up = r.data;
+  }
+  if (!up) {
+    const r = await jsonReq("POST", "/api/uploads", { filename: f.name || "video.mp4", size: f.size, content_type: f.type });
+    if (r.status === 401) { location.href = "/login"; throw new Error("Sign in required."); }
+    if (r.status !== 200) throw new Error(r.data.detail || "Couldn't start the upload. Please try again.");
+    up = r.data;
+    storeSet(key, up.id);
+  } else if (up.received > 0) {
+    toast(`Resuming your upload from ${(up.received / f.size * 100).toFixed(0)}%`);
+  }
+  let offset = up.received, fails = 0;
+  show(offset);
+  while (offset < f.size) {
+    const end = Math.min(f.size, offset + up.chunk_size);
+    const r = await putPiece(`/api/uploads/${up.id}?offset=${offset}`, f.slice(offset, end), n => show(offset + n));
+    if (r.status === 200) { offset = r.data.received; fails = 0; show(offset); continue; }
+    if (r.status === 409 && typeof r.data.received === "number") { offset = r.data.received; continue; }
+    if (r.status === 401) { location.href = "/login"; throw new Error("Sign in required."); }
+    if (r.status === 404) { storeSet(key, null); throw new Error(r.data.detail || "The upload expired. Please start it again."); }
+    if (r.status && r.status < 500 && r.status !== 408 && r.status !== 429)
+      throw new Error(r.data.detail || "Upload failed. Please try again.");
+    // Connection dropped or the server was busy: wait, then continue from what the server has.
+    fails++;
+    if (fails > 12) throw new Error("The connection kept dropping. Choose the same file again to continue where it stopped.");
+    for (let s = Math.min(30, 2 ** fails); s > 0; s--) {
+      show(offset, `Connection problem, retrying in ${s}s… (${(offset / f.size * 100).toFixed(0)}% uploaded)`);
+      await sleep(1000);
+    }
+    if (!navigator.onLine) {
+      show(offset, "You're offline. The upload will continue when the connection is back…");
+      await new Promise(res => window.addEventListener("online", res, { once: true }));
+    }
+    const st = await jsonReq("GET", `/api/uploads/${up.id}`);
+    if (st.status === 200) offset = st.data.received;
+  }
+  return { id: up.id, key };
+}
+
 const MAX_UPLOAD_MB = {{ max_upload_mb }};
-let submitting = false;
-document.getElementById("newjob").addEventListener("submit", e => {
+let submitting = false, uploadingNow = false;
+window.addEventListener("beforeunload", e => {
+  if (uploadingNow) { e.preventDefault(); e.returnValue = ""; }  // ask before leaving mid-upload
+});
+document.getElementById("newjob").addEventListener("submit", async e => {
   e.preventDefault();
   if (submitting) return;  // no double submissions
+  const go = document.getElementById("go"), bar = document.getElementById("upbar"), txt = document.getElementById("uptext");
+  const label = go.textContent;
+  const finish = () => {
+    submitting = false; uploadingNow = false; go.disabled = false; go.textContent = label;
+    bar.classList.add("hidden"); txt.textContent = "";
+  };
   const fd = new FormData();
+  let f = null, url = "";
   if (mode === "upload") {
-    const f = fileInput.files[0];
+    f = fileInput.files[0];
     if (!f) return toast("Choose a video or audio file first", true);
     if (f.size > MAX_UPLOAD_MB * 1024 * 1024)
       return toast(`This file is ${(f.size / 1048576).toFixed(0)} MB; the limit is {{ upload_limit }}.`, true);
     if (f.size === 0) return toast("This file is empty.", true);
-    fd.append("file", f, f.name || "video.mp4");
   } else {
-    const url = document.getElementById("url").value.trim();
+    url = document.getElementById("url").value.trim();
     if (!url) return toast("Paste a link first", true);
     if (!/^https?:\/\/\S+\.\S+/i.test(url)) return toast("Enter a full link that starts with https://", true);
     fd.append("url", url);
   }
   fd.append("options", JSON.stringify(options()));
-  const go = document.getElementById("go"), bar = document.getElementById("upbar"), txt = document.getElementById("uptext");
-  const label = go.textContent;
-  const finish = () => {
-    submitting = false; go.disabled = false; go.textContent = label;
-    bar.classList.add("hidden"); txt.textContent = "";
-  };
-  submitting = true; go.disabled = true; go.textContent = mode === "upload" ? "Uploading…" : "Starting…";
-  bar.classList.toggle("hidden", mode !== "upload"); bar.firstElementChild.style.width = "0%";
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/jobs");
-  xhr.upload.onprogress = ev => {
-    if (ev.lengthComputable) {
-      const pct = ev.loaded / ev.total * 100;
-      bar.firstElementChild.style.width = pct + "%";
-      txt.textContent = pct < 100 ? `Uploading ${pct.toFixed(0)}%` : "Checking the video…";
+  submitting = true; go.disabled = true; go.textContent = f ? "Uploading…" : "Starting…";
+  bar.classList.toggle("hidden", !f); bar.firstElementChild.style.width = "0%";
+  let uploaded = null;
+  try {
+    if (f) {
+      uploadingNow = true;
+      uploaded = await uploadFile(f, (done, note) => {
+        bar.firstElementChild.style.width = (done / f.size * 100) + "%";
+        txt.textContent = note || `Uploading ${(done / f.size * 100).toFixed(0)}% (${fmtBytes(done)} of ${fmtBytes(f.size)})`;
+      });
+      uploadingNow = false;
+      txt.textContent = "Checking the video…";
+      fd.append("upload_id", uploaded.id);
     }
-  };
-  xhr.onload = () => {
-    let data = {}; try { data = JSON.parse(xhr.responseText); } catch (_) {}
-    if (xhr.status >= 200 && xhr.status < 300 && data.id) { location.href = `/jobs/${data.id}`; return; }
+    const r = await fetch("/api/jobs", { method: "POST", body: fd, credentials: "same-origin" });
+    let data = {}; try { data = await r.json(); } catch (_) {}
+    if (r.ok && data.id) {
+      if (uploaded) storeSet(uploaded.key, null);
+      location.href = `/jobs/${data.id}`;
+      return;
+    }
+    if (r.status === 401) { location.href = "/login"; return; }
+    if (uploaded) storeSet(uploaded.key, null);  // the server has used or discarded the upload
     finish();
-    if (xhr.status === 401) { location.href = "/login"; return; }
-    toast(data.detail || (xhr.status === 413 ? `The file is larger than {{ upload_limit }}.` :
-      xhr.status >= 500 ? "The server had a problem. Please try again." : "Upload failed. Please try again."), true);
-  };
-  xhr.onerror = () => { finish(); toast("Connection lost during the upload. Check your connection and try again.", true); };
-  xhr.onabort = () => { finish(); toast("Upload cancelled.", true); };
-  xhr.send(fd);
+    toast(data.detail || (r.status >= 500 ? "The server had a problem. Please try again." : "Couldn't start the project. Please try again."), true);
+  } catch (err) {
+    finish();
+    toast(err && err.message ? err.message : "Connection lost. Check your connection and try again.", true);
+  }
 });
 
 async function loadJobs() {

@@ -692,8 +692,9 @@ class Runner:
             media.kill_job(j["id"])  # a re-render in progress
             freed += purge_job(j["id"])
             projects += 1
-        # Anything left on disk without a project (interrupted uploads, leftovers) and all temp files.
-        for d in config.JOBS_DIR.iterdir():
+        # Unfinished uploads, anything left on disk without a project, and all temp files.
+        db.execute("DELETE FROM uploads")
+        for d in list(config.UPLOADS_DIR.iterdir()) + list(config.JOBS_DIR.iterdir()):
             freed += dir_size(d) if d.is_dir() else 0
             shutil.rmtree(d, ignore_errors=True) if d.is_dir() else d.unlink(missing_ok=True)
         for f in config.TEMP_DIR.rglob("*"):
@@ -738,6 +739,24 @@ class Runner:
             log.info("expired %d project(s), freed %.0f MB", stats["expired_projects"],
                      stats["expired_bytes"] / 1048576)
 
+    def _expire_uploads(self, stats: dict) -> None:
+        """Delete unfinished uploads with no new piece for UPLOAD_EXPIRY_HOURS, and upload folders that
+        have no database row (e.g. their user was deleted)."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=config.UPLOAD_EXPIRY_HOURS)).isoformat(
+            timespec="seconds")
+        for row in db.query("SELECT id FROM uploads WHERE updated_at < ?", (cutoff,)):
+            db.execute("DELETE FROM uploads WHERE id = ?", (row["id"],))
+            shutil.rmtree(config.UPLOADS_DIR / row["id"], ignore_errors=True)
+            stats["expired_uploads"] += 1
+        known = {r["id"] for r in db.query("SELECT id FROM uploads")}
+        for d in config.UPLOADS_DIR.iterdir():
+            try:
+                if d.name not in known and d.stat().st_mtime < time.time() - 3600:
+                    shutil.rmtree(d, ignore_errors=True) if d.is_dir() else d.unlink(missing_ok=True)
+                    stats["expired_uploads"] += 1
+            except OSError:
+                pass
+
     def _recover_abandoned(self, stats: dict) -> None:
         """A job marked 'running' that no worker is processing (a crashed thread) goes back to the queue,
         or fails after MAX_JOB_ATTEMPTS; a clip stuck in 'rendering' is queued again."""
@@ -766,9 +785,10 @@ class Runner:
     def cleanup(self) -> dict:
         """Remove expired temporary files, leftovers and orphaned folders. Never touches rendered clips,
         captions or transcripts. Old source videos are removed only if SOURCE_RETENTION_DAYS is set."""
-        stats = {"expired_projects": 0, "expired_bytes": 0, "abandoned_jobs": 0, "temp_files": 0, "orphans": 0,
+        stats = {"expired_projects": 0, "expired_bytes": 0, "expired_uploads": 0, "abandoned_jobs": 0, "temp_files": 0, "orphans": 0,
                  "orphan_clips": 0, "leftover_dirs": 0, "sources": 0}
         self._expire_projects(stats)
+        self._expire_uploads(stats)
         self._recover_abandoned(stats)
         cutoff = time.time() - config.TEMP_FILE_MAX_AGE_HOURS * 3600
         for p in sorted(config.TEMP_DIR.rglob("*"), key=lambda x: len(x.parts), reverse=True):

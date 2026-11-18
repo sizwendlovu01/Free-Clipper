@@ -155,7 +155,9 @@ All optional except where noted. Names in brackets are older aliases that still 
 | `MAX_CONCURRENT_JOBS` | 1 | Videos processed at once. |
 | `MAX_WORKERS` (FC_RENDER_WORKERS) | 1 | Clips rendered in parallel per video (one ffmpeg each). |
 | `FFMPEG_THREADS` | 0 (auto) | Threads per ffmpeg process. |
-| `MAX_UPLOAD_SIZE_MB` (FC_MAX_UPLOAD_MB) | 4096 | Upload limit (rejected before the upload is read). Railway requires uploads to finish within 5 minutes, so large files need a fast upstream connection (4 GB needs about 14 MB/s); links have no such limit. |
+| `MAX_UPLOAD_SIZE_MB` (FC_MAX_UPLOAD_MB) | 4096 | Upload limit (rejected before the upload starts). The dashboard sends files in small pieces (`UPLOAD_CHUNK_MB`, default 8), so Railway's per-request time limit never applies to a whole upload, and a dropped connection resumes where it stopped. |
+| `UPLOAD_EXPIRY_HOURS` | 24 | An unfinished upload with no progress for this long is deleted. |
+| `MAX_OPEN_UPLOADS` | 3 | Unfinished uploads per user at once (admins exempt). |
 | `MAX_DOWNLOAD_SIZE_MB` | 4096 | Largest video fetched from a link. |
 | `MAX_VIDEO_DURATION` | 7200 | Seconds (2 hours); checked before downloading. The UI shows this limit everywhere. |
 | `MAX_CLIPS_PER_JOB` | 10 | |
@@ -276,7 +278,7 @@ volume deletes its backups.
 | "Every clip failed to render" | The message now includes the first clip's error. Out of storage: the app picks a smaller download to fit, but on a tiny volume long videos drop to 360p/480p. Set `MODEL_DIR=/tmp/clipforge-models` to keep Whisper models off the volume, set `SOURCE_RETENTION_DAYS=1`, or resize the volume. Out of memory: choose fewer clips or add RAM. |
 | YouTube asks for a sign-in check | YouTube sometimes blocks cloud server IP addresses. As admin, open Settings, then **YouTube access**, and upload a cookies.txt exported (Netscape format, e.g. with a "Get cookies.txt" browser extension) from a browser signed in to YouTube with a spare Google account. Or set `YTDLP_PROXY` to a proxy URL. Users can always upload the file instead. |
 | Old styles or buttons after a deploy | Static files are fingerprinted (`?v=...`), so browsers fetch the new version automatically. If a page still looks wrong, hard-refresh once. |
-| Uploads fail on slow connections | Railway closes uploads that take longer than 5 minutes. Lower `MAX_UPLOAD_SIZE_MB` or upload shorter files. |
+| Upload stopped part-way | The dashboard retries automatically. If the page was closed, choose the same file again: the upload continues from where it stopped (unfinished uploads are kept for `UPLOAD_EXPIRY_HOURS`). |
 | Claude not used | `ANTHROPIC_API_KEY` missing or invalid; the project page notes the fallback. |
 
 ## 11. Updating dependencies

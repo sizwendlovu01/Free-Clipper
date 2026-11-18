@@ -75,11 +75,14 @@ JOBS_DIR = _path("PROJECTS_DIR", "OUTPUT_DIR", default=DATA_DIR / "jobs")
 MODEL_DIR = _path("MODEL_DIR", default=DATA_DIR / "models")
 BRAND_DIR = DATA_DIR / "branding"
 FONTS_DIR = _path("FC_FONTS_DIR", default=DATA_DIR / "fonts")
+# Uploads arriving in pieces (resumable). On the storage volume so an upload survives a redeploy and the
+# finished file moves into its project folder without copying.
+UPLOADS_DIR = _path("UPLOADS_DIR", default=DATA_DIR / "uploads")
 # Scratch space for in-flight uploads and ZIP exports. Defaults to the container's own disk (large on
 # Railway) rather than the size-limited volume; files here are short-lived and cleaned automatically.
 TEMP_DIR = _path("TEMP_DIR", default=Path(tempfile.gettempdir()) / "clipforge")
 
-for _d in (DATA_DIR, DB_PATH.parent, JOBS_DIR, MODEL_DIR, BRAND_DIR, FONTS_DIR, TEMP_DIR):
+for _d in (DATA_DIR, DB_PATH.parent, JOBS_DIR, MODEL_DIR, BRAND_DIR, FONTS_DIR, TEMP_DIR, UPLOADS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 # Make every tempfile (including the web server's upload spooling) use TEMP_DIR.
 tempfile.tempdir = str(TEMP_DIR)
@@ -213,6 +216,10 @@ TEMP_FILE_MAX_AGE_HOURS = max(1, _int("TEMP_FILE_MAX_AGE_HOURS", default=6))
 # Delete a project's *source* video this many days after processing (0 = keep forever). Rendered clips,
 # captions and transcripts are never deleted by cleanup; without the source, clips can't be re-rendered.
 SOURCE_RETENTION_DAYS = max(0, _int("SOURCE_RETENTION_DAYS", default=0))
+# An unfinished upload with no new piece for this long is deleted (the user can start it again).
+UPLOAD_EXPIRY_HOURS = max(1, _int("UPLOAD_EXPIRY_HOURS", default=24))
+UPLOAD_CHUNK_MB = min(64, max(1, _int("UPLOAD_CHUNK_MB", default=8)))  # size of each upload piece
+MAX_OPEN_UPLOADS = max(1, _int("MAX_OPEN_UPLOADS", default=3))  # unfinished uploads per user
 
 # YouTube sometimes asks cloud servers to "confirm you're not a bot". Two standard yt-dlp workarounds:
 # a cookies.txt exported from a signed-in browser (uploaded by an admin in Settings, or a path), and a proxy.

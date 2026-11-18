@@ -21,6 +21,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.requests import ClientDisconnect
 
 from . import auth, config, db
 from .pipeline import ingest, media
@@ -236,7 +237,7 @@ def job_json(j: dict, with_clips: bool = False) -> dict:
 
 
 def user_storage_mb(user_id: int) -> int:
-    total = 0
+    total = sum(r["received"] for r in db.query("SELECT received FROM uploads WHERE user_id = ?", (user_id,)))
     for j in db.query("SELECT id FROM jobs WHERE user_id = ?", (user_id,)):
         for p in job_dir(j["id"]).rglob("*"):
             try:
@@ -825,7 +826,7 @@ def api_jobs(user: dict = Depends(require_user)):
 
 @app.post("/api/jobs")
 async def api_job_create(request: Request, file: UploadFile | None = File(None), url: str = Form(""),
-                         options: str = Form("{}"), title: str = Form(""),
+                         options: str = Form("{}"), title: str = Form(""), upload_id: str = Form(""),
                          user: dict = Depends(require_user)):
     try:
         opts = clean_options(json.loads(options or "{}"), user)
@@ -834,7 +835,29 @@ async def api_job_create(request: Request, file: UploadFile | None = File(None),
     await run_in_threadpool(check_capacity, user)
     job_id = uuid.uuid4().hex[:16]
     jdir = job_dir(job_id)
-    if file is not None and file.filename:
+    if upload_id:
+        up = own_upload(upload_id, user)
+        part = upload_path(up)
+        size = part.stat().st_size if part.exists() else 0
+        if size != up["size"]:
+            raise HTTPException(409, f"The upload isn't finished yet ({size} of {up['size']} bytes).")
+        jdir.mkdir(parents=True, exist_ok=True)
+        dest = jdir / f"source{up['ext']}"
+        await run_in_threadpool(shutil.move, str(part), str(dest))
+        remove_upload(upload_id)
+        try:
+            info = await run_in_threadpool(media.probe, dest)
+        except media.MediaError as e:
+            shutil.rmtree(jdir, ignore_errors=True)
+            raise HTTPException(400, str(e) if "supported" in str(e) else
+                                "This file couldn't be read as video or audio.")
+        if info["duration"] > config.MAX_VIDEO_SECONDS + 5:
+            shutil.rmtree(jdir, ignore_errors=True)
+            raise HTTPException(400, f"This video is {info['duration'] / 60:.0f} minutes long; the limit is "
+                                     f"{config.MAX_VIDEO_SECONDS // 60} minutes.")
+        source_type, source = "upload", up["filename"]
+        job_title = title.strip() or Path(up["filename"]).stem
+    elif file is not None and file.filename:
         ext = upload_extension(file.filename, file.content_type)
         if not ext:
             raise HTTPException(400, f"Unsupported file type {Path(file.filename).suffix or '(none)'}. "
@@ -891,6 +914,131 @@ async def api_job_create(request: Request, file: UploadFile | None = File(None),
         (job_id, user["id"], job_title[:200], source_type, source, json.dumps(opts), db.now(), db.now()))
     runner.notify()
     return job_json(db.one("SELECT * FROM jobs WHERE id = ?", (job_id,)))
+
+
+# ---------------- resumable uploads ----------------
+# Large files arrive in small pieces (UPLOAD_CHUNK_MB). Each piece is a short request, so a slow
+# connection never hits a proxy's request time limit, and a dropped connection resumes from the last
+# piece the server has instead of starting over. The finished file becomes a project via
+# POST /api/jobs with upload_id.
+
+_upload_locks: dict = {}
+
+
+def own_upload(upload_id: str, user: dict) -> dict:
+    up = db.one("SELECT * FROM uploads WHERE id = ?", (upload_id,))
+    if not up or up["user_id"] != user["id"]:
+        raise HTTPException(404, "Upload not found. It may have expired; please start it again.")
+    return up
+
+
+def upload_path(up: dict) -> Path:
+    return config.UPLOADS_DIR / up["id"] / "data"
+
+
+def remove_upload(upload_id: str) -> None:
+    db.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
+    shutil.rmtree(config.UPLOADS_DIR / upload_id, ignore_errors=True)
+    _upload_locks.pop(upload_id, None)
+
+
+def upload_json(up: dict) -> dict:
+    part = upload_path(up)
+    received = part.stat().st_size if part.exists() else 0
+    return {"id": up["id"], "filename": up["filename"], "size": up["size"], "received": received,
+            "chunk_size": config.UPLOAD_CHUNK_MB * 1024 * 1024}
+
+
+@app.post("/api/uploads")
+async def api_upload_start(request: Request, user: dict = Depends(require_user)):
+    from .worker import disk_free_mb, min_free_mb
+
+    body = await request.json()
+    filename = Path(str(body.get("filename") or "video.mp4")).name[:200]
+    try:
+        size = int(body.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size <= 0:
+        raise HTTPException(400, "This file is empty.")
+    if size > config.MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(413, f"File is larger than the {human_size(config.MAX_UPLOAD_MB)} limit.")
+    ext = upload_extension(filename, body.get("content_type"))
+    if not ext:
+        raise HTTPException(400, f"Unsupported file type {Path(filename).suffix or '(none)'}. "
+                                 "Upload a video or audio file such as MP4, MOV, WEBM or MP3.")
+    await run_in_threadpool(check_capacity, user)
+    open_count = db.one("SELECT COUNT(*) AS n FROM uploads WHERE user_id = ?", (user["id"],))["n"]
+    if open_count >= config.MAX_OPEN_UPLOADS and not user["is_admin"]:
+        raise HTTPException(429, "You have too many unfinished uploads. Finish or cancel one first.")
+    room = disk_free_mb() - min_free_mb() - 200
+    if size / 1048576 > room:
+        raise HTTPException(507, f"There isn't enough free storage for this file right now "
+                                 f"({max(0, room)} MB available). Try a smaller file later.")
+    upload_id = uuid.uuid4().hex
+    (config.UPLOADS_DIR / upload_id).mkdir(parents=True, exist_ok=True)
+    (config.UPLOADS_DIR / upload_id / "data").touch()
+    db.execute("INSERT INTO uploads(id, user_id, filename, ext, size, received, created_at, updated_at) "
+               "VALUES(?, ?, ?, ?, ?, 0, ?, ?)", (upload_id, user["id"], filename, ext, size, db.now(), db.now()))
+    return upload_json(db.one("SELECT * FROM uploads WHERE id = ?", (upload_id,)))
+
+
+@app.get("/api/uploads/{upload_id}")
+def api_upload_status(upload_id: str, user: dict = Depends(require_user)):
+    return upload_json(own_upload(upload_id, user))
+
+
+@app.put("/api/uploads/{upload_id}")
+async def api_upload_chunk(upload_id: str, request: Request, offset: int, user: dict = Depends(require_user)):
+    """Append one piece at `offset`. The server's byte count is the truth: a piece for the wrong offset
+    gets 409 with the current count, and a piece cut off mid-way is discarded, so retries are safe."""
+    import asyncio
+
+    up = own_upload(upload_id, user)
+    lock = _upload_locks.setdefault(upload_id, asyncio.Lock())
+    async with lock:
+        part = upload_path(up)
+        if not part.exists():
+            raise HTTPException(404, "Upload not found. It may have expired; please start it again.")
+        have = part.stat().st_size
+        if offset != have:
+            return JSONResponse({"detail": "Offset mismatch.", "received": have}, status_code=409)
+        limit = min(config.UPLOAD_CHUNK_MB * 1024 * 1024 * 2, up["size"] - have)
+        buf = bytearray()
+        try:
+            async for piece in request.stream():
+                buf += piece
+                if len(buf) > limit:
+                    raise HTTPException(413, "Upload piece is too large.")
+        except ClientDisconnect:  # connection dropped mid-piece: keep nothing; the browser resends it
+            return Response(status_code=499)
+        if not buf:
+            raise HTTPException(400, "Empty upload piece.")
+
+        def append() -> int:
+            try:
+                with part.open("ab") as f:
+                    f.write(buf)
+            except OSError:
+                with part.open("ab") as f:  # never keep a half-written piece
+                    f.truncate(have)
+                raise
+            return part.stat().st_size
+
+        try:
+            received = await run_in_threadpool(append)
+        except OSError as e:
+            raise HTTPException(507, "The server ran out of storage during the upload.") from e
+        db.execute("UPDATE uploads SET received = ?, updated_at = ? WHERE id = ?",
+                   (received, db.now(), upload_id))
+    return {"received": received, "size": up["size"], "complete": received == up["size"]}
+
+
+@app.delete("/api/uploads/{upload_id}")
+def api_upload_cancel(upload_id: str, user: dict = Depends(require_user)):
+    own_upload(upload_id, user)
+    remove_upload(upload_id)
+    return {"ok": True}
 
 
 @app.get("/api/jobs/{job_id}")
