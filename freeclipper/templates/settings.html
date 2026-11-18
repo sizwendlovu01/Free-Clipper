@@ -111,9 +111,7 @@ api("/api/system").then(s => {
   }, "Cleaning…");
   const pa = document.getElementById("purgeall");
   if (pa) pa.onclick = e => {
-    const typed = prompt("This permanently deletes EVERY project, clip and upload for ALL users, and stops anything processing.
-
-Type DELETE to confirm.");
+    const typed = prompt("This permanently deletes EVERY project, clip and upload for ALL users, and stops anything processing.\n\nType DELETE to confirm.");
     if (typed === null) return;
     if (typed.trim() !== "DELETE") return toast("Nothing deleted: you must type DELETE.", true);
     withBusy(e.currentTarget, async () => {
