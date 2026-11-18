@@ -156,6 +156,8 @@ All optional except where noted. Names in brackets are older aliases that still 
 | `MAX_WORKERS` (FC_RENDER_WORKERS) | 1 | Clips rendered in parallel per video (one ffmpeg each). |
 | `FFMPEG_THREADS` | 0 (auto) | Threads per ffmpeg process. |
 | `MAX_UPLOAD_SIZE_MB` (FC_MAX_UPLOAD_MB) | 4096 | Upload limit (rejected before the upload starts). The dashboard sends files in small pieces (`UPLOAD_CHUNK_MB`, default 8), so Railway's per-request time limit never applies to a whole upload, and a dropped connection resumes where it stopped. |
+| `ALERT_WEBHOOK_URL` | (empty) | A Discord or Slack incoming-webhook URL. Failed projects, server errors and low storage are posted there as they happen (Admin page lists them either way). Use **Admin > Send test alert** to check it. |
+| `ALERT_COOLDOWN_MINUTES` | 30 | The same kind of problem alerts at most this often; the next alert says how many were held back. |
 | `UPLOAD_EXPIRY_HOURS` | 24 | An unfinished upload with no progress for this long is deleted. |
 | `MAX_OPEN_UPLOADS` | 3 | Unfinished uploads per user at once (admins exempt). |
 | `MAX_DOWNLOAD_SIZE_MB` | 4096 | Largest video fetched from a link. |

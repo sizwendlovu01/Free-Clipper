@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import config, db
+from . import config, db, monitor
 from .pipeline import captions, highlights, ingest, media, render, transcribe
 
 log = logging.getLogger("freeclipper.worker")
@@ -527,6 +527,9 @@ class Runner:
                 notes.append(f"{failures} of {len(clip_rows)} clips failed to render; see their errors below.")
             total = time.monotonic() - started
             log.info("job %s done in %.0fs %s", job_id, total, {k: round(v) for k, v in timings.items()})
+            monitor.record("info", "project finished",
+                           f"{job['title'][:80]}: {len(clip_rows) - failures} clip(s) in {total / 60:.1f} min",
+                           job_id=job_id, user_id=job["user_id"])
             self._update(job_id, status="done", progress=1.0, error=None, notes="\n".join(notes) or None,
                          stage=f"Done in {total / 60:.1f} min via {names.get(used, used)} "
                                f"({len(clip_rows) - failures} clips)")
@@ -538,9 +541,12 @@ class Runner:
                 requeued = self._stopping
                 self._interrupted(job_id)
             else:
-                log.error("job %s failed: %s", job_id, traceback.format_exc())
+                tb = traceback.format_exc()
+                log.error("job %s failed: %s", job_id, tb, extra={"monitored": True})
                 self._update(job_id, status="failed", stage="Failed", error=friendly_error(exc),
                              notes="\n".join(notes) or None)
+                monitor.record("error", "project failed", f"{job['title'][:80]}: {friendly_error(exc)}"[:900],
+                               tb, job_id=job_id, user_id=job["user_id"])
         finally:
             if video_thread and video_thread.is_alive():
                 self._cancel.add(job_id)  # stop the download if the job ended early
@@ -612,7 +618,9 @@ class Runner:
                 except Cancelled:
                     continue
                 except Exception as exc:
-                    log.exception("render failed for clip %s", c["id"])
+                    log.exception("render failed for clip %s", c["id"], extra={"monitored": True})
+                    monitor.record("error", "clip failed", f"Clip {c['id']} of {job_id}: {str(exc).splitlines()[0][:300]}",
+                                   traceback.format_exc(), job_id=job_id, alert=False)
                     db.execute("UPDATE clips SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
                                (str(exc)[-2000:], db.now(), c["id"]))
                     with lock:
@@ -833,5 +841,8 @@ class Runner:
         stats["disk_free_mb"] = disk_free_mb()
         if stats["disk_free_mb"] < min_free_mb():
             log.warning("low disk space: %d MB free in %s", stats["disk_free_mb"], config.JOBS_DIR)
+            monitor.record("error", "storage", f"Storage almost full: {stats['disk_free_mb']} MB free of "
+                           f"{disk_total_mb()} MB. New uploads are being refused.")
+        stats["events_pruned"] = monitor.prune()
         log.info("cleanup: %s", stats)
         return stats

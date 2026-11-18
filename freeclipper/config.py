@@ -216,6 +216,14 @@ TEMP_FILE_MAX_AGE_HOURS = max(1, _int("TEMP_FILE_MAX_AGE_HOURS", default=6))
 # Delete a project's *source* video this many days after processing (0 = keep forever). Rendered clips,
 # captions and transcripts are never deleted by cleanup; without the source, clips can't be re-rendered.
 SOURCE_RETENTION_DAYS = max(0, _int("SOURCE_RETENTION_DAYS", default=0))
+# ---------------- monitoring ----------------
+# Failures are sent to this webhook (Discord or Slack "incoming webhook" URL). Empty = dashboard only.
+ALERT_WEBHOOK_URL = (_env("ALERT_WEBHOOK_URL", default="") or "").strip()
+ALERT_COOLDOWN_MINUTES = max(1, _int("ALERT_COOLDOWN_MINUTES", default=30))
+# Public address for links in alerts. Railway sets RAILWAY_PUBLIC_DOMAIN automatically.
+PUBLIC_DOMAIN = (_env("PUBLIC_DOMAIN", "RAILWAY_PUBLIC_DOMAIN", default="") or "").strip().rstrip("/")
+PUBLIC_DOMAIN = PUBLIC_DOMAIN.replace("https://", "").replace("http://", "")
+
 # An unfinished upload with no new piece for this long is deleted (the user can start it again).
 UPLOAD_EXPIRY_HOURS = max(1, _int("UPLOAD_EXPIRY_HOURS", default=24))
 UPLOAD_CHUNK_MB = min(64, max(1, _int("UPLOAD_CHUNK_MB", default=8)))  # size of each upload piece

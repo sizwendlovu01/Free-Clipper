@@ -23,7 +23,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import ClientDisconnect
 
-from . import auth, config, db
+from . import auth, config, db, monitor
 from .pipeline import ingest, media
 from .pipeline.render import ASPECTS
 from .worker import Runner, find_source, job_dir, purge_job, remove_clip_files
@@ -38,6 +38,7 @@ FFMPEG_OK = bool(shutil.which(config.FFMPEG)) and bool(shutil.which(config.FFPRO
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    monitor.install()
     runner.start()
     log.info("ClipForge AI ready: %d job worker(s), %d render worker(s), data in %s, database %s",
              config.MAX_CONCURRENT_JOBS, config.RENDER_WORKERS, config.DATA_DIR, config.DB_PATH)
@@ -130,7 +131,18 @@ async def guard(request: Request, call_next):
                 return JSONResponse({"detail": f"There isn't enough free storage for this file right now "
                                                f"({max(0, room)} MB available). Try a smaller file later."},
                                     status_code=507)
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:  # a crash inside a request: record it, then let the server answer 500
+        import traceback
+        user = None
+        try:
+            user = current_user(request)
+        except Exception:
+            pass
+        monitor.record("error", "server error", f"{request.method} {request.url.path}: {type(exc).__name__}: {exc}"[:900],
+                       traceback.format_exc(), user_id=user["id"] if user else None)
+        raise
     for key, value in SECURITY_HEADERS.items():
         response.headers.setdefault(key, value)
     if config.HTTPS_ONLY_COOKIES:
@@ -628,6 +640,93 @@ async def api_cleanup(admin: dict = Depends(require_admin)):
     return await run_in_threadpool(runner.cleanup)
 
 
+@app.get("/admin")
+def admin_page(request: Request):
+    user = page_user(request)
+    if isinstance(user, Response):
+        return user
+    if not user["is_admin"]:
+        return RedirectResponse("/", 303)
+    return page(request, "admin.html", user)
+
+
+@app.get("/api/admin/stats")
+def api_admin_stats(admin: dict = Depends(require_admin)):
+    """Usage and health for the admin dashboard. Counts come from the event log (kept 30 days), so they
+    survive projects being deleted or expiring."""
+    from .worker import disk_free_mb, disk_total_mb
+
+    now = datetime.now(timezone.utc)
+    iso = lambda dt: dt.isoformat(timespec="seconds")  # noqa: E731
+    d1, d7, d30 = iso(now - timedelta(days=1)), iso(now - timedelta(days=7)), iso(now - timedelta(days=30))
+
+    days = [(now - timedelta(days=i)).date().isoformat() for i in range(29, -1, -1)]
+    daily = {d: {"date": d, "created": 0, "done": 0, "failed": 0} for d in days}
+    kind = {"project created": "created", "project finished": "done", "project failed": "failed"}
+    for r in db.query("SELECT substr(created_at, 1, 10) AS d, source, COUNT(*) AS n FROM events "
+                      "WHERE created_at >= ? AND source IN ('project created', 'project finished', 'project failed') "
+                      "GROUP BY d, source", (d30,)):
+        if r["d"] in daily:
+            daily[r["d"]][kind[r["source"]]] = r["n"]
+
+    per_event = {r["user_id"]: r for r in db.query(
+        "SELECT user_id, SUM(source = 'project created' AND created_at >= ?) AS videos_7d, "
+        "SUM(source = 'project created') AS videos_30d, SUM(source = 'project failed' AND created_at >= ?) AS failed_7d, "
+        "MAX(created_at) AS last_active FROM events WHERE user_id IS NOT NULL AND created_at >= ? GROUP BY user_id",
+        (d7, d7, d30))}
+    per_job = {r["user_id"]: r for r in db.query(
+        "SELECT j.user_id, COUNT(DISTINCT j.id) AS projects, COUNT(c.id) AS clips FROM jobs j "
+        "LEFT JOIN clips c ON c.job_id = j.id GROUP BY j.user_id")}
+    users = []
+    for u in db.query("SELECT id, username, is_admin, created_at FROM users ORDER BY id"):
+        e, j = per_event.get(u["id"]) or {}, per_job.get(u["id"]) or {}
+        users.append({"id": u["id"], "username": u["username"], "is_admin": bool(u["is_admin"]),
+                      "joined": u["created_at"], "projects": j.get("projects", 0) or 0,
+                      "clips": j.get("clips", 0) or 0, "storage_mb": user_storage_mb(u["id"]),
+                      "videos_7d": e.get("videos_7d", 0) or 0, "videos_30d": e.get("videos_30d", 0) or 0,
+                      "failed_7d": e.get("failed_7d", 0) or 0, "last_active": e.get("last_active")})
+    users.sort(key=lambda u: (u["last_active"] or "", u["storage_mb"]), reverse=True)
+
+    done30 = sum(d["done"] for d in daily.values())
+    failed30 = sum(d["failed"] for d in daily.values())
+    today = daily[days[-1]]
+    errors = [dict(r) for r in db.query(
+        "SELECT e.id, e.level, e.source, e.message, e.details, e.job_id, e.created_at, u.username, "
+        "(SELECT 1 FROM jobs WHERE jobs.id = e.job_id) AS job_exists FROM events e "
+        "LEFT JOIN users u ON u.id = e.user_id WHERE e.level IN ('error', 'critical') "
+        "ORDER BY e.id DESC LIMIT 100")]
+    return {
+        "kpis": {
+            "users": len(users),
+            "new_users_7d": sum(1 for u in users if (u["joined"] or "") >= d7),
+            "active_users_7d": sum(1 for u in users if (u["last_active"] or "") >= d7 and u["videos_7d"]),
+            "videos_today": today["created"], "videos_30d": sum(d["created"] for d in daily.values()),
+            "failure_rate_30d": round(100 * failed30 / (done30 + failed30), 1) if done30 + failed30 else 0.0,
+            "errors_24h": db.one("SELECT COUNT(*) AS n FROM events WHERE level IN ('error', 'critical') "
+                                 "AND created_at >= ?", (d1,))["n"],
+            "storage_used_mb": sum(u["storage_mb"] for u in users),
+            "disk_free_mb": disk_free_mb(), "disk_total_mb": disk_total_mb(),
+            "running": db.one("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running'")["n"],
+            "queued": db.one("SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued'")["n"],
+        },
+        "daily": [daily[d] for d in days],
+        "users": users,
+        "errors": errors,
+        "alerts": {"configured": bool(config.ALERT_WEBHOOK_URL), "cooldown_minutes": config.ALERT_COOLDOWN_MINUTES},
+    }
+
+
+@app.post("/api/admin/test-alert")
+async def api_admin_test_alert(admin: dict = Depends(require_admin)):
+    if not config.ALERT_WEBHOOK_URL:
+        raise HTTPException(400, "Set ALERT_WEBHOOK_URL in your server variables first.")
+    sent = await run_in_threadpool(monitor.send_alert, f"Test alert from {monitor.config_name()}: "
+                                   "alerts are working. " + (monitor.public_url("/admin") or ""), True)
+    if not sent:
+        raise HTTPException(502, "The webhook didn't accept the message. Check ALERT_WEBHOOK_URL.")
+    return {"sent": True}
+
+
 @app.post("/api/admin/purge-all")
 async def api_purge_all(request: Request, admin: dict = Depends(require_admin)):
     """Permanently delete every project, clip and upload for all users, to free the whole volume.
@@ -912,6 +1011,8 @@ async def api_job_create(request: Request, file: UploadFile | None = File(None),
         "INSERT INTO jobs(id, user_id, title, source_type, source, status, stage, options, created_at, updated_at) "
         "VALUES(?, ?, ?, ?, ?, 'queued', 'Waiting in queue', ?, ?, ?)",
         (job_id, user["id"], job_title[:200], source_type, source, json.dumps(opts), db.now(), db.now()))
+    monitor.record("info", "project created", f"{user['username']}: {job_title[:80]} ({source_type})",
+                   job_id=job_id, user_id=user["id"])
     runner.notify()
     return job_json(db.one("SELECT * FROM jobs WHERE id = ?", (job_id,)))
 

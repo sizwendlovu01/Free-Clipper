@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row" style="margin-bottom:16px">
+  <h1 style="margin:0">Admin</h1><span class="spacer"></span>
+  <span class="small muted" id="updated"></span>
+  <button class="sm" id="refresh">Refresh</button>
+</div>
+
+<div class="kpis" id="kpis"><p class="muted">Loading…</p></div>
+
+<div class="card">
+  <div class="row" style="margin-bottom:8px">
+    <h2 style="margin:0">Videos per day</h2><span class="spacer"></span>
+    <span class="legend"><span class="sw done"></span>Finished <span class="sw failed"></span>Failed</span>
+  </div>
+  <p class="small muted" style="margin:0 0 12px">Last 30 days. Each bar is one day; hover a day for its numbers.</p>
+  <div class="chart" id="chart" role="img" aria-label="Videos per day for the last 30 days"></div>
+  <div id="chart-tip" class="chart-tip hidden"></div>
+  <details style="margin-top:10px"><summary class="small">Show as a table</summary><div id="daily-table"></div></details>
+</div>
+
+<div class="card">
+  <h2>Users</h2>
+  <p class="small muted" style="margin-top:-6px">Storage and projects are what's stored now; video counts cover the last 7 and 30 days.</p>
+  <div class="table-wrap"><table class="admin-table">
+    <thead><tr><th>User</th><th>Joined</th><th class="num">Videos 7d</th><th class="num">Videos 30d</th>
+      <th class="num">Failed 7d</th><th class="num">Projects</th><th class="num">Clips</th><th class="num">Storage</th><th>Last active</th></tr></thead>
+    <tbody id="users"></tbody></table></div>
+</div>
+
+<div class="card">
+  <div class="row" style="margin-bottom:8px">
+    <h2 style="margin:0">Errors and failures</h2><span class="spacer"></span>
+    <span class="small" id="alert-status"></span>
+    <button class="sm" id="testalert">Send test alert</button>
+  </div>
+  <p class="small muted" style="margin:0 0 12px">Failed projects, crashes and storage warnings from the last 30 days, newest first.
+    Set <code>ALERT_WEBHOOK_URL</code> to a Discord or Slack webhook to get them on your phone as they happen.</p>
+  <div id="errors"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const $ = id => document.getElementById(id);
+const fmtMB = mb => mb >= 1024 ? (mb / 1024).toFixed(1) + " GB" : Math.round(mb) + " MB";
+const fmtDate = iso => iso ? new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "—";
+const ago = iso => {
+  if (!iso) return "—";
+  const m = Math.round((Date.now() - new Date(iso)) / 60000);
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+};
+
+function tile(label, value, sub, tone) {
+  return `<div class="kpi ${tone || ""}"><div class="lbl">${label}</div><div class="val">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+}
+
+function drawKpis(k) {
+  const usedPct = k.disk_total_mb ? Math.round(100 * (k.disk_total_mb - k.disk_free_mb) / k.disk_total_mb) : 0;
+  $("kpis").innerHTML = [
+    tile("Users", k.users, `${k.new_users_7d} new · ${k.active_users_7d} active this week`),
+    tile("Videos today", k.videos_today, `${k.videos_30d} in 30 days · ${k.running} processing, ${k.queued} queued`),
+    tile("Failure rate", k.failure_rate_30d + "%", "of finished videos, 30 days", k.failure_rate_30d >= 10 ? "warn" : ""),
+    tile("Errors (24 h)", k.errors_24h, k.errors_24h ? "see the list below" : "all quiet", k.errors_24h ? "bad" : "good"),
+    tile("Storage", fmtMB(k.storage_used_mb), `${fmtMB(k.disk_free_mb)} free of ${fmtMB(k.disk_total_mb)} (${usedPct}% used)`, usedPct >= 85 ? "warn" : ""),
+  ].join("");
+}
+
+function drawChart(daily) {
+  const max = Math.max(1, ...daily.map(d => d.done + d.failed));
+  const W = 900, H = 200, pad = 22, bw = (W - pad) / daily.length;
+  const y = v => (H - 24) * v / max;
+  let bars = "";
+  daily.forEach((d, i) => {
+    const x = pad + i * bw + 2, w = Math.max(2, bw - 4);
+    const hd = y(d.done), hf = y(d.failed), base = H - 20;
+    if (d.done) bars += `<rect class="b done" x="${x}" y="${base - hd}" width="${w}" height="${hd}" rx="3"/>`;
+    if (d.failed) bars += `<rect class="b failed" x="${x}" y="${base - hd - hf - (d.done ? 2 : 0)}" width="${w}" height="${hf}" rx="3"/>`;
+    bars += `<rect class="hit" x="${pad + i * bw}" y="0" width="${bw}" height="${H}" data-i="${i}"/>`;
+    if (i % 7 === 0 || i === daily.length - 1)
+      bars += `<text class="ax" x="${x + w / 2}" y="${H - 4}" text-anchor="middle">${fmtDate(d.date + "T12:00:00")}</text>`;
+  });
+  const grid = [0.5, 1].map(f => `<line class="grid" x1="${pad}" x2="${W}" y1="${H - 20 - y(max * f)}" y2="${H - 20 - y(max * f)}"/>
+    <text class="ax" x="${pad - 6}" y="${H - 16 - y(max * f)}" text-anchor="end">${Math.round(max * f)}</text>`).join("");
+  $("chart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" height="${H}">${grid}
+    <line class="base" x1="${pad}" x2="${W}" y1="${H - 20}" y2="${H - 20}"/>${bars}</svg>`;
+  const tip = $("chart-tip");
+  $("chart").querySelectorAll(".hit").forEach(r => {
+    r.addEventListener("mouseenter", () => {
+      const d = daily[+r.dataset.i];
+      tip.innerHTML = `<b>${fmtDate(d.date + "T12:00:00")}</b><br>${d.created} started · ${d.done} finished · ${d.failed} failed`;
+      tip.classList.remove("hidden");
+    });
+    r.addEventListener("mousemove", e => { tip.style.left = (e.clientX + 12) + "px"; tip.style.top = (e.clientY - 10) + "px"; });
+    r.addEventListener("mouseleave", () => tip.classList.add("hidden"));
+  });
+  $("daily-table").innerHTML = `<table class="admin-table"><thead><tr><th>Day</th><th class="num">Started</th><th class="num">Finished</th><th class="num">Failed</th></tr></thead><tbody>
+    ${[...daily].reverse().map(d => `<tr><td>${fmtDate(d.date + "T12:00:00")}</td><td class="num">${d.created}</td><td class="num">${d.done}</td><td class="num">${d.failed}</td></tr>`).join("")}</tbody></table>`;
+}
+
+function drawUsers(users) {
+  $("users").innerHTML = users.map(u => `<tr>
+    <td><b>${esc(u.username)}</b>${u.is_admin ? ' <span class="badge">admin</span>' : ""}</td>
+    <td>${fmtDate(u.joined)}</td><td class="num">${u.videos_7d}</td><td class="num">${u.videos_30d}</td>
+    <td class="num ${u.failed_7d ? "bad-text" : ""}">${u.failed_7d}</td><td class="num">${u.projects}</td>
+    <td class="num">${u.clips}</td><td class="num">${fmtMB(u.storage_mb)}</td><td>${ago(u.last_active)}</td></tr>`).join("")
+    || `<tr><td colspan="9" class="muted">No users yet.</td></tr>`;
+}
+
+function drawErrors(errors, alerts) {
+  $("alert-status").innerHTML = alerts.configured
+    ? `<span class="ok-text">● Alerts on</span> <span class="muted">(same problem at most every ${alerts.cooldown_minutes} min)</span>`
+    : `<span class="muted">● Alerts off: dashboard only</span>`;
+  $("testalert").disabled = !alerts.configured;
+  $("errors").innerHTML = errors.length ? errors.map(e => `<details class="err">
+      <summary><span class="lvl ${e.level}">${e.level === "critical" ? "Critical" : "Error"}</span>
+        <span class="src">${esc(e.source)}</span><span class="msg">${esc(e.message)}</span>
+        <span class="when">${ago(e.created_at)}</span></summary>
+      <div class="small muted">${new Date(e.created_at).toLocaleString()}${e.username ? " · user " + esc(e.username) : ""}
+        ${e.job_id ? (e.job_exists ? ` · <a href="/jobs/${e.job_id}">open project</a>` : " · project since deleted") : ""}</div>
+      ${e.details ? `<pre>${esc(e.details)}</pre>` : ""}</details>`).join("")
+    : `<p class="muted">No errors in the last 30 days.</p>`;
+}
+
+async function load() {
+  try {
+    const s = await api("/api/admin/stats");
+    drawKpis(s.kpis); drawChart(s.daily); drawUsers(s.users); drawErrors(s.errors, s.alerts);
+    $("updated").textContent = "Updated " + new Date().toLocaleTimeString();
+  } catch (e) { toast("Couldn't load the dashboard", true); }
+}
+$("refresh").onclick = e => withBusy(e.currentTarget, load, "Refreshing…");
+$("testalert").onclick = e => withBusy(e.currentTarget, async () => {
+  await api("/api/admin/test-alert", { method: "POST" }); toast("Test alert sent. Check your channel.");
+}, "Sending…");
+load();
+setInterval(load, 60000);
+</script>
+{% endblock %}

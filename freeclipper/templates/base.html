@@ -22,6 +22,7 @@
     <a href="/clips" class="{{ 'active' if path == '/clips' }}">All clips</a>
     <a href="/templates" class="{{ 'active' if path == '/templates' }}">Caption styles</a>
     <a href="/settings" class="{{ 'active' if path == '/settings' }}">Settings</a>
+    {% if user and user.is_admin %}<a href="/admin" class="{{ 'active' if path == '/admin' }}">Admin</a>{% endif %}
   </nav>
   <span class="spacer"></span>
   <span class="muted small">{{ user.username }}</span>
