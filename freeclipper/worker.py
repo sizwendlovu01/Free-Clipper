@@ -88,6 +88,33 @@ def purge_job(job_id: str) -> int:
     return freed
 
 
+# Half-finished downloads and working files: useless after a restart, and the first thing to go when the
+# volume is full (a full disk also stops the database from saving anything).
+_PARTIAL_GLOBS = ("*.part", "*.part-Frag*", "*.ytdl", "source.f*.*", "source.temp.*", "*.temp.mp4",
+                  "audiosrc.*", "audio.tmp.wav")
+
+
+def emergency_free_space() -> int:
+    """If the storage is (nearly) full, delete partial downloads and temp files. Touches only files, never
+    the database, so it works even when SQLite can no longer write. Returns bytes freed."""
+    if disk_free_mb() >= min_free_mb():
+        return 0
+    freed = 0
+    targets = [p for d in config.JOBS_DIR.iterdir() if d.is_dir() for g in _PARTIAL_GLOBS for p in d.glob(g)]
+    targets += [p for p in config.TEMP_DIR.rglob("*") if p.is_file()]
+    for p in targets:
+        try:
+            if p.is_file():
+                size = p.stat().st_size
+                p.unlink()
+                freed += size
+        except OSError:
+            pass
+    log.warning("storage was full: removed %d partial/temporary file(s), %.0f MB freed, %d MB free now",
+                len(targets), freed / 1048576, disk_free_mb())
+    return freed
+
+
 def template_style(template_id: int | None) -> dict:
     row = None
     if template_id:
@@ -183,6 +210,7 @@ class Runner:
 
     # ---- lifecycle ----
     def start(self) -> None:
+        emergency_free_space()  # before anything writes to the database
         self._recover()
         for i in range(self.workers):
             self._spawn(self._loop, f"clip-worker-{i}")

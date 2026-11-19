@@ -84,15 +84,31 @@ def video_info(url: str) -> dict:
     return {"title": info.get("title"), "duration": info.get("duration")}
 
 
+# A download stops before free storage drops below this, so the database and running jobs always have room.
+STORAGE_FLOOR_MB = 300
+
+
+class StorageFull(RuntimeError):
+    pass
+
+
 def _base_opts(progress: Callable[[float], None], should_stop: Callable[[], bool]) -> dict:
+    import time
     import yt_dlp
 
     # Video and audio are separate downloads (each 0-100%); combine them so progress only moves forward.
-    state = {"done": 0, "best": 0.0}
+    state = {"done": 0, "best": 0.0, "checked": 0.0}
 
     def hook(d: dict) -> None:
         if should_stop():
             raise yt_dlp.utils.DownloadCancelled("Cancelled")
+        now = time.monotonic()
+        if now - state["checked"] > 2:  # safety brake: never fill the volume
+            state["checked"] = now
+            free = shutil.disk_usage(config.JOBS_DIR).free / 1048576
+            if free < STORAGE_FLOOR_MB:
+                raise StorageFull("The server's storage filled up while downloading this video. Try a shorter "
+                                  "video, or ask the admin to free up or enlarge the storage.")
         parts = len((d.get("info_dict") or {}).get("requested_formats") or []) or 1
         if d.get("status") == "finished":
             state["done"] += 1
@@ -173,7 +189,10 @@ def _estimated_bytes(f: dict, duration: float | None) -> float | None:
 
 def pick_format(info: dict, budget_mb: int) -> str | None:
     """The highest-quality format (up to 1080p) whose real or estimated size fits the budget, as a
-    yt-dlp format id ("137+140" for separate video and audio). None if no size can be judged."""
+    yt-dlp format id ("137+140" for separate video and audio). None if no size can be judged.
+
+    Peak disk use is counted, not just the final size: joining separate video and audio, or fixing up a
+    streamed (HLS, e.g. Twitch) download, briefly writes a second full copy."""
     duration = info.get("duration")
     formats = info.get("formats") or []
     has = lambda f, k: f.get(k) not in (None, "none")  # noqa: E731
@@ -184,21 +203,30 @@ def pick_format(info: dict, budget_mb: int) -> str | None:
                 default=None)
     audio_bytes = _estimated_bytes(audio, duration) if audio else None
     limit = budget_mb * 1024 * 1024 * 0.92
-    fits = []
+    fits, judged = [], 0
     for v in videos:
         size = _estimated_bytes(v, duration)
         if size is None:
             continue
         if has(v, "acodec"):
             total, fid = size, v["format_id"]
+            peak = total * (2 if "m3u8" in str(v.get("protocol")) else 1)
         elif audio is not None and audio_bytes is not None:
             total, fid = size + audio_bytes, f"{v['format_id']}+{audio['format_id']}"
+            peak = total * 2  # the parts plus the merged file
         else:
             continue
-        if total <= limit:
+        judged += 1
+        if peak <= limit:
             # Best height first; at the same height prefer 30 fps (half the work to render) and smaller files.
             fits.append(((v["height"], -(v.get("fps") or 30) if (v.get("fps") or 0) > 30 else 0, -total), fid))
-    return max(fits)[1] if fits else None
+    if fits:
+        return max(fits)[1]
+    if judged:  # sizes are known and even the smallest version doesn't fit
+        raise StorageFull(f"This video is too large for the storage that's free right now (about {budget_mb} MB "
+                          "available for it). Try a shorter video, or ask the admin to free up or enlarge the "
+                          "storage.")
+    return None
 
 
 def download(url: str, dest_dir: Path, progress: Callable[[float], None],
@@ -215,7 +243,16 @@ def download(url: str, dest_dir: Path, progress: Callable[[float], None],
     try:  # choose by real or estimated size first; fall back to yt-dlp's own filters
         with _access_opts() as access, yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True,
                                                          "skip_download": True, **access}) as ydl:
-            fmt = pick_format(ydl.extract_info(url, download=False), budget)
+            info = ydl.extract_info(url, download=False)
+        # Room for what runs alongside: the audio-only download and the extracted 16 kHz audio
+        # (about 0.07 MB per second of video together).
+        budget -= int((info.get("duration") or 0) * 0.07)
+        if budget < 30:
+            raise RuntimeError("The server's storage is too full to download this video. Delete old projects, "
+                               "or ask the admin to enlarge the storage volume.")
+        fmt = pick_format(info, budget)
+    except RuntimeError:
+        raise
     except Exception as exc:
         log.info("format pre-check failed (%s); using size filters", type(exc).__name__)
     opts = _base_opts(progress, should_stop) | {

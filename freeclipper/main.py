@@ -26,11 +26,13 @@ from starlette.requests import ClientDisconnect
 from . import auth, config, db, monitor
 from .pipeline import ingest, media
 from .pipeline.render import ASPECTS
-from .worker import Runner, find_source, job_dir, purge_job, remove_clip_files
+from .worker import Runner, emergency_free_space, find_source, job_dir, purge_job, remove_clip_files
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("freeclipper")
 
+# A full volume stops SQLite from opening; clear half-finished downloads first so the app can start.
+emergency_free_space()
 db.init()
 runner = Runner(config.MAX_CONCURRENT_JOBS)
 FFMPEG_OK = bool(shutil.which(config.FFMPEG)) and bool(shutil.which(config.FFPROBE))
