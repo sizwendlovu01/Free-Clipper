@@ -108,7 +108,8 @@ function render() {
   for (const [id, key] of [["rn", "max_clips"], ["rmin", "min_len"], ["rmax", "max_len"], ["raspect", "aspect"], ["rreframe", "reframe"], ["rprompt", "prompt"]]) {
     const el = document.getElementById(id);
     if (document.activeElement !== el && !el.dataset.touched) {
-      if (id === "rreframe") setReframe(el, o.reframe || "auto", o.aspect); else el.value = o[key] ?? "";
+      if (id === "rreframe") { setReframe(el, o.reframe || "auto", o.aspect); if (typeof rPicker !== "undefined" && rPicker) rPicker.refresh(); }
+      else el.value = o[key] ?? "";
     }
   }
   const ratio = ASPECT_CSS[o.aspect] || "9/16";
@@ -244,6 +245,7 @@ document.getElementById("addclip").onclick = e => withBusy(e.currentTarget, asyn
   load();
 }, "Adding…");
 linkReframe(document.getElementById("rreframe"), document.getElementById("raspect"));
+var rPicker = layoutPicker(document.getElementById("rreframe"));
 document.querySelectorAll("#rn,#rmin,#rmax,#raspect,#rreframe,#rprompt").forEach(el => el.addEventListener("input", () => el.dataset.touched = 1));
 document.getElementById("reanalyze").onclick = e => {
   if (job.clips.length && !confirm("This replaces the current clips. Continue?")) return;

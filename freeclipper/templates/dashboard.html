@@ -152,6 +152,7 @@ function showPicked() {
 })();
 
 linkReframe(document.getElementById("reframe"), document.getElementById("aspect"));
+layoutPicker(document.getElementById("reframe"));
 function options() {
   const v = id => document.getElementById(id).value, c = id => document.getElementById(id).checked;
   return { max_clips: +v("max_clips"), min_len: +v("min_len"), max_len: +v("max_len"), aspect: v("aspect"),

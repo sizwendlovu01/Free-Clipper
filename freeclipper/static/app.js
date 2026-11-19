@@ -220,3 +220,107 @@ function linkReframe(reframeSel, aspectSel) {
     if (current && current !== aspectSel.value) setReframe(reframeSel, mode, aspectSel.value);
   });
 }
+
+// ---- Layout picker: picture cards for the Reframing menu ----
+// The <select> stays as the real setting (hidden); the cards set it and fire "change", so everything that
+// listens to the menu keeps working. Hover a card (computer) or tap it (phone) to see a larger preview.
+const LAYOUT_INFO = {
+  "auto": ["Follow faces", "Keeps the speaker's face in frame as they move. Best for podcasts, interviews and talking heads."],
+  "streamer@9:16": ["Streamer, webcam top-left", "Vertical 9:16. Most of the gameplay with the streamer's webcam in the top-left corner; caption under the webcam."],
+  "streamer_bottom@9:16": ["Streamer, webcam bottom-left", "Vertical 9:16. Most of the gameplay with the streamer's webcam in the bottom-left corner; caption above the webcam."],
+  "streamer@1:1": ["Streamer, webcam top-left", "Square 1:1. Gameplay fills the frame with the webcam in the top-left corner; caption on the webcam's bottom edge."],
+  "streamer_bottom@1:1": ["Streamer, webcam bottom-left", "Square 1:1. Gameplay fills the frame with the webcam in the bottom-left corner; caption just above it."],
+  "center": ["Center crop", "Crops the middle of the video to fill the frame."],
+  "fit_blur": ["Blurred background", "Shows the whole video, with a soft blur filling the space around it."],
+  "fit_black": ["Black bars", "Shows the whole video, with black bars above and below."],
+};
+
+function layoutArt(value) {
+  const square = value.endsWith("@1:1");
+  const W = 90, H = square ? 90 : 160;
+  const game = (x, y, w, h) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="3" fill="url(#lpGame)"/>
+    <path d="M${x} ${y + h * 0.72} L${x + w * 0.28} ${y + h * 0.45} L${x + w * 0.5} ${y + h * 0.62} L${x + w * 0.75} ${y + h * 0.38} L${x + w} ${y + h * 0.6} L${x + w} ${y + h} L${x} ${y + h} Z" fill="var(--lp-hill)"/>
+    <circle cx="${x + w * 0.5}" cy="${y + h * 0.5}" r="${Math.min(w, h) * 0.07}" fill="var(--lp-hero)"/>`;
+  const person = (cx, cy, s) => `<circle cx="${cx}" cy="${cy - s * 0.25}" r="${s * 0.22}" fill="var(--lp-face)"/>
+    <path d="M${cx - s * 0.42} ${cy + s * 0.55} Q${cx} ${cy - s * 0.1} ${cx + s * 0.42} ${cy + s * 0.55} Z" fill="var(--lp-face)"/>`;
+  const cam = (x, y, w, h) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="var(--lp-cam)" stroke="var(--lp-line)" stroke-width="0.8"/>${person(x + w * 0.55, y + h * 0.55, h * 0.75)}`;
+  const caption = (cx, y, w) => `<rect x="${cx - w / 2}" y="${y}" width="${w}" height="9" rx="2" fill="#000" opacity=".55"/>
+    <rect x="${cx - w / 2 + 4}" y="${y + 3}" width="${w * 0.42}" height="3" rx="1.5" fill="#fff"/>
+    <rect x="${cx + 2}" y="${y + 3}" width="${w * 0.36}" height="3" rx="1.5" fill="#ffe600"/>`;
+  const blur = `<rect width="${W}" height="${H}" fill="url(#lpBlur)"/>`;
+  let body = "";
+  const [mode] = value.split("@");
+  if (mode === "auto") {
+    body = `<rect width="${W}" height="${H}" fill="var(--lp-room)"/>${person(W / 2, H * 0.5, 44)}${caption(W / 2, H * 0.78, 54)}`;
+  } else if (mode === "center") {
+    body = game(-55, 0, 200, H) + caption(W / 2, H * 0.78, 54);
+  } else if (mode === "fit_blur") {
+    body = blur + game(0, H / 2 - 26, W, 51) + caption(W / 2, H * 0.78, 54);
+  } else if (mode === "fit_black") {
+    body = `<rect width="${W}" height="${H}" fill="#000"/>` + game(0, H / 2 - 26, W, 51) + caption(W / 2, H * 0.78, 54);
+  } else {  // streamer layouts
+    const top = mode === "streamer";
+    const bw = W * 0.42, bh = bw / 1.2;
+    const boxY = top ? 0 : H - bh;
+    const capY = top ? bh - 5 : H - bh - 12;
+    body = square
+      ? blur + game(0, 6, W, H - 12) + cam(0, boxY, bw, bh) + caption(W / 2, capY, 50)
+      : blur + game(0, H / 2 - 30, W, 60) + cam(0, boxY, bw, bh) + caption(W / 2, capY, 50);
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs><linearGradient id="lpGame" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--lp-sky1)"/><stop offset="1" stop-color="var(--lp-sky2)"/></linearGradient>
+    <linearGradient id="lpBlur" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--lp-blur1)"/><stop offset="1" stop-color="var(--lp-blur2)"/></linearGradient></defs>
+    <rect width="${W}" height="${H}" fill="var(--lp-room)"/>${body}</svg>`;
+}
+
+function layoutPicker(select) {
+  if (!select || select.dataset.picker) return;
+  select.dataset.picker = "1";
+  const field = select.closest("div");
+  field.classList.add("layout-field");
+  select.classList.add("visually-hidden");
+  const wrap = document.createElement("div");
+  wrap.className = "layout-picker";
+  const values = [...select.options].map(o => o.value).filter(v => LAYOUT_INFO[v]);
+  const card = v => {
+    const [name] = LAYOUT_INFO[v];
+    const fmt = v.includes("@") ? `<span class="lp-fmt">${v.split("@")[1]}</span>` : "";
+    return `<button type="button" class="lp-card" role="radio" data-value="${v}" aria-label="${name}${v.includes("@") ? ", " + v.split("@")[1] : ""}">
+      <span class="lp-thumb ${v.endsWith("@1:1") ? "square" : ""}">${layoutArt(v)}</span><span class="lp-name">${name}</span>${fmt}</button>`;
+  };
+  wrap.innerHTML = `<div class="lp-cards" role="radiogroup" aria-label="Reframing">${values.map(card).join("")}</div>
+    <div class="lp-preview" aria-live="polite"><div class="lp-big"></div><div><b class="lp-title"></b><p class="lp-desc small muted"></p>
+    <p class="lp-hint small muted">Hover a layout to preview it, or tap it on a phone.</p></div></div>`;
+  field.appendChild(wrap);
+  const big = wrap.querySelector(".lp-big"), title = wrap.querySelector(".lp-title"), desc = wrap.querySelector(".lp-desc");
+  const show = v => {
+    const [name, text] = LAYOUT_INFO[v] || ["", ""];
+    big.className = "lp-big" + (v.endsWith("@1:1") ? " square" : "");
+    big.innerHTML = layoutArt(v);
+    title.textContent = name + (v.includes("@") ? ` (${v.split("@")[1]})` : "");
+    desc.textContent = text;
+  };
+  const mark = () => {
+    wrap.querySelectorAll(".lp-card").forEach(b => {
+      const on = b.dataset.value === select.value;
+      b.classList.toggle("on", on); b.setAttribute("aria-checked", on);
+    });
+    show(select.value);
+  };
+  wrap.querySelectorAll(".lp-card").forEach(b => {
+    b.addEventListener("click", () => {
+      select.value = b.dataset.value;
+      select.dataset.touched = 1;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+      mark();
+    });
+    b.addEventListener("mouseenter", () => show(b.dataset.value));
+    b.addEventListener("focus", () => show(b.dataset.value));
+    b.addEventListener("mouseleave", () => show(select.value));
+    b.addEventListener("blur", () => show(select.value));
+  });
+  select.addEventListener("change", mark);
+  mark();
+  return { refresh: mark };
+}
