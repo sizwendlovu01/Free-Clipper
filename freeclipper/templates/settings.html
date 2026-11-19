@@ -15,6 +15,14 @@
     <p id="tokout" class="small" style="margin-top:10px"></p>
   </div>
 
+  <div class="card" id="accounts">
+    <h2>Connected accounts</h2>
+    <p class="small muted">Connect TikTok, Instagram and YouTube accounts to post clips straight from a project with
+      <b>Auto-post</b>. Connect as many accounts as you like: each one signs in on the platform's own page, so your
+      passwords are never shared with {{ brand.app_name }}.</p>
+    <div id="acctlist"><p class="small muted">Loading…</p></div>
+  </div>
+
   {% if user.is_admin %}
   <div class="card">
     <h2>Branding</h2>
@@ -73,6 +81,37 @@
 {% block scripts %}
 <script>
 const $ = id => document.getElementById(id);
+{% if flash %}toast({{ flash.text|tojson }}, {{ "true" if flash.error else "false" }});{% endif %}
+
+const CONNECT_TIPS = {
+  tiktok: "To add a different TikTok account, sign out of TikTok on tiktok.com in this browser first, or connect from a private window.",
+  instagram: "Instagram asks you to sign in each time, so you can pick a different account. It must be a Business or Creator account.",
+  youtube: "Google lets you choose the Google account, and the channel if you manage more than one.",
+};
+const ADMIN_KEYS = { tiktok: "TIKTOK_CLIENT_KEY and TIKTOK_CLIENT_SECRET", instagram: "INSTAGRAM_APP_ID and INSTAGRAM_APP_SECRET",
+  youtube: "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET" };
+async function loadAccounts() {
+  let d;
+  try { d = await api("/api/social/accounts"); } catch (e) { $("acctlist").textContent = e.message; return; }
+  $("acctlist").innerHTML = d.platforms.map(p => {
+    const mine = d.accounts.filter(a => a.platform === p.id);
+    const rows = mine.map(a => `<div class="acct-row">${acctAvatar(a, 32)}
+      <div class="info"><b>${esc(acctName(a))}</b><span class="small muted">${a.status === "ok"
+        ? `${a.posts_today}/${a.daily_limit} posts in the last 24 h` : `<span style="color:var(--danger)">${esc(a.last_error || "Needs reconnecting")}</span>`}</span></div>
+      ${a.status !== "ok" ? `<a class="btn sm primary" href="/oauth/${p.id}/start">Reconnect</a>` : ""}
+      <button class="sm danger" onclick="disconnectAccount(${a.id}, this)">Disconnect</button></div>`).join("");
+    const connect = p.configured
+      ? `<a class="btn sm${mine.length ? "" : " primary"}" href="/oauth/${p.id}/start">${mine.length ? "Connect another" : "Connect"} ${esc(p.label)} account</a>
+         <p class="small muted" style="margin:6px 0 0">${CONNECT_TIPS[p.id]}${p.id === "tiktok" && !d.tiktok_audited ? " Until TikTok approves this app, TikTok posts are private (Only me)." : ""}</p>`
+      : `<p class="small muted" style="margin:0">Not set up on this server yet.${d.redirects[p.id] ? ` Add ${ADMIN_KEYS[p.id]} to the server's variables, and register this redirect URL with ${esc(p.label)}: <span class="code-line">${esc(d.redirects[p.id])}</span>` : " Ask the administrator to set it up."}</p>`;
+    return `<div class="acct-group"><h3>${esc(p.label)}</h3>${rows}${connect}</div>`;
+  }).join("");
+}
+function disconnectAccount(id, btn) {
+  if (!confirm("Disconnect this account? Posts waiting to go to it are cancelled. You can connect it again later.")) return;
+  withBusy(btn, async () => { await api(`/api/social/accounts/${id}`, { method: "DELETE" }); toast("Disconnected"); loadAccounts(); });
+}
+loadAccounts();
 $("pw").onclick = e => withBusy(e.currentTarget, async () => {
   if (!$("cur").value) throw new Error("Enter your current password.");
   if ($("npw").value.length < 8) throw new Error("The new password must be at least 8 characters.");

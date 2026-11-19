@@ -5,8 +5,10 @@ import hmac
 import json
 import logging
 import re
+import secrets
 import shutil
 import tempfile
+import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
@@ -23,7 +25,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import ClientDisconnect
 
-from . import auth, config, db, monitor, storage
+from . import auth, config, db, monitor, social, storage
 from .pipeline import ingest, media
 from .pipeline.render import ASPECTS
 from .worker import (Runner, emergency_free_space, find_source, job_dir, purge_job, remove_clip_files,
@@ -438,7 +440,17 @@ def settings_page(request: Request):
     user = page_user(request)
     if isinstance(user, Response):
         return user
-    return page(request, "settings.html", user)
+    return page(request, "settings.html", user, flash=request.session.pop("flash", None))
+
+
+@app.get("/privacy")
+def privacy_page(request: Request):
+    return page(request, "privacy.html", current_user(request), contact=config.CONTACT_EMAIL)
+
+
+@app.get("/terms")
+def terms_page(request: Request):
+    return page(request, "terms.html", current_user(request), contact=config.CONTACT_EMAIL)
 
 
 @app.get("/login")
@@ -1387,6 +1399,193 @@ def api_clip_delete(clip_id: str, user: dict = Depends(require_user)):
     db.execute("DELETE FROM clips WHERE id = ?", (clip_id,))
     freed = remove_clip_files(job["id"], clip_id)
     return {"ok": True, "freed_mb": round(freed / 1048576, 1)}
+
+
+# ---------------- auto-posting to TikTok, Instagram and YouTube ----------------
+
+def oauth_redirect(request: Request, platform: str) -> str:
+    """The address the platform sends the user back to. Must match what's registered with the platform."""
+    base = f"https://{config.PUBLIC_DOMAIN}" if config.PUBLIC_DOMAIN else str(request.base_url).rstrip("/")
+    return f"{base}/oauth/{platform}/callback"
+
+
+def own_account(account_id: int, user: dict) -> dict:
+    account = db.one("SELECT * FROM social_accounts WHERE id = ? AND user_id = ?", (account_id, user["id"]))
+    if not account:
+        raise HTTPException(404, "Account not found.")
+    return account
+
+
+@app.get("/oauth/{platform}/start")
+def oauth_start(platform: str, request: Request):
+    user = page_user(request)
+    if isinstance(user, Response):
+        return user
+    if platform not in social.PLATFORMS or not social.configured(platform):
+        request.session["flash"] = {"error": True, "text": "That platform isn't set up on this server yet."}
+        return RedirectResponse("/settings#accounts", 303)
+    state = secrets.token_urlsafe(24)
+    request.session["oauth"] = {"state": state, "platform": platform, "at": int(time.time())}
+    return RedirectResponse(social.authorize_url(platform, state, oauth_redirect(request, platform)), 303)
+
+
+@app.get("/oauth/{platform}/callback")
+async def oauth_callback(platform: str, request: Request, code: str = "", state: str = "", error: str = "",
+                         error_description: str = ""):
+    user = page_user(request)
+    if isinstance(user, Response):
+        return user
+    saved = request.session.pop("oauth", None) or {}
+
+    def back(text: str, failed: bool = True):
+        request.session["flash"] = {"error": failed, "text": text[:300]}
+        return RedirectResponse("/settings#accounts", 303)
+
+    if platform not in social.PLATFORMS:
+        raise HTTPException(404)
+    if error:
+        return back("Connecting was cancelled." if error in ("access_denied", "user_denied")
+                    else f"{social.PLATFORMS[platform]} said: {error_description or error}")
+    if (not code or not state or not hmac.compare_digest(str(saved.get("state", "")), state)
+            or saved.get("platform") != platform or time.time() - saved.get("at", 0) > 900):
+        return back("That sign-in expired or didn't start here. Press Connect again.")
+    try:
+        info = await run_in_threadpool(social.exchange, platform, code, oauth_redirect(request, platform))
+        await run_in_threadpool(social.save_account, user["id"], platform, info)
+    except social.PostError as exc:
+        return back(str(exc))
+    except Exception as exc:
+        log.warning("connecting %s failed: %s: %s", platform, type(exc).__name__, exc)
+        return back(f"Couldn't finish connecting to {social.PLATFORMS[platform]}. Try again in a minute.")
+    name = info.get("username") or info.get("display_name")
+    return back(f"Connected {name} on {social.PLATFORMS[platform]}.", failed=False)
+
+
+@app.get("/api/social/accounts")
+def api_social_accounts(request: Request, user: dict = Depends(require_user)):
+    rows = db.query("SELECT * FROM social_accounts WHERE user_id = ? ORDER BY platform, created_at", (user["id"],))
+    return {"platforms": [{"id": p, "label": label, "configured": social.configured(p)}
+                          for p, label in social.PLATFORMS.items()],
+            "accounts": [social.account_json(a) for a in rows], "tiktok_audited": config.TIKTOK_AUDITED,
+            # Admins see the exact redirect addresses to register with each platform.
+            "redirects": {p: oauth_redirect(request, p) for p in social.PLATFORMS} if user["is_admin"] else {}}
+
+
+@app.delete("/api/social/accounts/{account_id}")
+def api_social_disconnect(account_id: int, user: dict = Depends(require_user)):
+    social.disconnect(own_account(account_id, user))
+    return {"ok": True}
+
+
+@app.get("/api/social/accounts/{account_id}/tiktok")
+def api_tiktok_creator(account_id: int, user: dict = Depends(require_user)):
+    """What this TikTok account may post right now (TikTok requires asking each time the post screen opens)."""
+    account = own_account(account_id, user)
+    if account["platform"] != "tiktok":
+        raise HTTPException(400, "Not a TikTok account.")
+    try:
+        info = social.tiktok_creator_info(account)
+    except social.PostError as exc:
+        if exc.reconnect:
+            social.mark_reconnect(account["id"], str(exc))
+        raise HTTPException(409, str(exc))
+    options = info.get("privacy_level_options") or []
+    if not config.TIKTOK_AUDITED:
+        options = [o for o in options if o == "SELF_ONLY"]
+    return {"nickname": info.get("creator_nickname") or account["display_name"],
+            "username": info.get("creator_username") or account["username"],
+            "avatar_url": info.get("creator_avatar_url") or account["avatar_url"],
+            "privacy_options": options, "comment_disabled": bool(info.get("comment_disabled")),
+            "duet_disabled": bool(info.get("duet_disabled")), "stitch_disabled": bool(info.get("stitch_disabled")),
+            "max_duration": info.get("max_video_post_duration_sec"), "audited": config.TIKTOK_AUDITED}
+
+
+@app.get("/api/clips/{clip_id}/post-text")
+def api_post_text(clip_id: str, accounts: str = "", user: dict = Depends(require_user)):
+    """A different title and caption for each chosen account."""
+    clip, _job = own_clip(clip_id, user)
+    ids = [as_int(x) for x in accounts.split(",") if x.strip()][:50]
+    chosen = [own_account(i, user) for i in ids if i]
+    variants = social.caption_variants(clip, [a["platform"] for a in chosen])
+    return {"variants": [{"account_id": a["id"], **v} for a, v in zip(chosen, variants)]}
+
+
+@app.post("/api/clips/{clip_id}/posts")
+async def api_post_clip(clip_id: str, request: Request, user: dict = Depends(require_user)):
+    clip, _job = own_clip(clip_id, user)
+    if clip["status"] != "done":
+        raise HTTPException(409, "The clip isn't ready yet.")
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    targets = [t for t in body.get("targets") or [] if isinstance(t, dict)] if isinstance(body.get("targets"), list) else []
+    spacing = max(0, min(24 * 60, as_int(body.get("spacing_minutes")) or 0))
+    try:
+        ids = social.queue(user["id"], clip, targets[:50], spacing)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"posts": [social.post_json(p) for p in db.query(
+        f"SELECT * FROM posts WHERE id IN ({','.join('?' * len(ids))}) ORDER BY scheduled_at", ids)]}
+
+
+@app.get("/api/posts")
+def api_posts(job_id: str = "", clip_id: str = "", user: dict = Depends(require_user)):
+    sql, args = "SELECT * FROM posts WHERE user_id = ?", [user["id"]]
+    if job_id:
+        sql, args = sql + " AND job_id = ?", args + [job_id]
+    if clip_id:
+        sql, args = sql + " AND clip_id = ?", args + [clip_id]
+    rows = db.query(sql + " ORDER BY created_at DESC, id DESC LIMIT 300", args)
+    return {"posts": [social.post_json(p) for p in rows]}
+
+
+def own_post(post_id: int, user: dict) -> dict:
+    post = db.one("SELECT * FROM posts WHERE id = ? AND user_id = ?", (post_id, user["id"]))
+    if not post:
+        raise HTTPException(404, "Post not found.")
+    return post
+
+
+@app.delete("/api/posts/{post_id}")
+def api_post_cancel(post_id: int, user: dict = Depends(require_user)):
+    own_post(post_id, user)
+    if not db.execute("UPDATE posts SET status = 'cancelled', stage = 'Cancelled', updated_at = ? "
+                      "WHERE id = ? AND status = 'queued'", (db.now(), post_id)):
+        raise HTTPException(409, "Only posts that are still waiting can be cancelled.")
+    return {"ok": True}
+
+
+@app.post("/api/posts/{post_id}/retry")
+def api_post_retry(post_id: int, user: dict = Depends(require_user)):
+    post = own_post(post_id, user)
+    account = own_account(post["account_id"], user)
+    if account["status"] == "reconnect":
+        raise HTTPException(409, "Reconnect this account in Settings first.")
+    if not db.execute("UPDATE posts SET status = 'queued', stage = 'Waiting to post', error = NULL, attempts = 0, "
+                      "scheduled_at = ?, updated_at = ? WHERE id = ? AND status IN ('failed', 'cancelled')",
+                      (db.now(), db.now(), post_id)):
+        raise HTTPException(409, "Only failed or cancelled posts can be tried again.")
+    social.notify()
+    return social.post_json(db.one("SELECT * FROM posts WHERE id = ?", (post_id,)))
+
+
+@app.api_route("/media/{token}/clip.mp4", methods=["GET", "HEAD"])
+def public_media(token: str):
+    """A signed, short-lived public link to one clip, for platforms that download the video themselves
+    (Instagram). Without a valid signature nothing is served."""
+    clip_id = social.media_clip(token)
+    clip = db.one("SELECT * FROM clips WHERE id = ?", (clip_id,)) if clip_id else None
+    if not clip:
+        raise HTTPException(404)
+    rel = f"clips/{clip['id']}/clip.mp4"
+    path = job_dir(clip["job_id"]) / rel
+    if path.exists():
+        return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "no-store"})
+    if storage.is_remote(clip["job_id"], rel):
+        return RedirectResponse(storage.link(clip["job_id"], rel, content_type="video/mp4"), 302)
+    raise HTTPException(404)
 
 
 @app.get("/files/{clip_id}/{name}")

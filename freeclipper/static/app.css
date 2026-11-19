@@ -206,3 +206,34 @@ code { background: var(--panel-2); padding: 2px 6px; border-radius: 6px; font-si
   .lp-big { width: 96px; height: 170px; } .lp-big.square { height: 96px; }
   .lp-hint { display: none; }
 }
+
+/* Auto-posting */
+.modal .card.wide { width: min(720px, 100%); }
+.ap-top { display: grid; grid-template-columns: 140px 1fr; gap: 16px; align-items: start; margin-bottom: 8px; }
+.ap-top video { width: 100%; aspect-ratio: 9/16; background: #000; border-radius: 10px; object-fit: contain; }
+.ap-accounts { display: grid; gap: 8px; }
+.ap-acct { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); cursor: pointer; }
+.ap-acct:has(input:checked) { border-color: var(--accent); }
+.check.off { opacity: .55; cursor: not-allowed; }
+.acct-av { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; flex: none; background: var(--panel); }
+.acct-av.ph { display: inline-grid; place-items: center; font-size: 13px; color: var(--muted); border: 1px solid var(--line); }
+.ap-target { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin: 12px 0; }
+.ap-target .field { margin-bottom: 10px; }
+.ap-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.tt-commercial-opts { margin-top: 8px; display: grid; gap: 6px; padding-left: 24px; }
+.tt-commercial-opts[hidden] { display: none; }
+.post-status:empty { display: none; }
+.post-status { border-top: 1px solid var(--line); padding-top: 8px; display: grid; gap: 6px; }
+.post-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; }
+.post-row .pf { font-weight: 600; }
+.post-row .who { color: var(--muted); overflow: hidden; text-overflow: ellipsis; max-width: 140px; white-space: nowrap; }
+.post-row .detail { flex-basis: 100%; }
+.acct-group { padding: 12px 0; border-top: 1px solid var(--line); }
+.acct-group:first-of-type { border-top: 0; }
+.acct-group h3 { margin: 0 0 8px; font-size: 15px; }
+.acct-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; flex-wrap: wrap; }
+.acct-row .info { flex: 1; min-width: 140px; }
+.acct-row .info b { display: block; }
+.code-line { font-family: ui-monospace, monospace; font-size: 12px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 2px 6px; overflow-wrap: anywhere; }
+@media (max-width: 560px) { .ap-top { grid-template-columns: 1fr; } .ap-top video { max-height: 260px; } }

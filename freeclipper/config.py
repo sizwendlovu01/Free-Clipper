@@ -234,6 +234,29 @@ ALERT_COOLDOWN_MINUTES = max(1, _int("ALERT_COOLDOWN_MINUTES", default=30))
 PUBLIC_DOMAIN = (_env("PUBLIC_DOMAIN", "RAILWAY_PUBLIC_DOMAIN", default="") or "").strip().rstrip("/")
 PUBLIC_DOMAIN = PUBLIC_DOMAIN.replace("https://", "").replace("http://", "")
 
+# ---------------- auto-posting to social accounts ----------------
+# Keys from each platform's developer app (see RAILWAY_DEPLOYMENT.md, "Auto-posting"). A platform whose
+# keys are missing simply doesn't show a Connect button.
+TIKTOK_CLIENT_KEY = (_env("TIKTOK_CLIENT_KEY", default="") or "").strip()
+TIKTOK_CLIENT_SECRET = (_env("TIKTOK_CLIENT_SECRET", default="") or "").strip()
+# Until TikTok approves the app (its "audit"), every TikTok post is private ("Only me"). Set to true after.
+TIKTOK_AUDITED = _bool("TIKTOK_AUDITED", default=False)
+INSTAGRAM_APP_ID = (_env("INSTAGRAM_APP_ID", default="") or "").strip()
+INSTAGRAM_APP_SECRET = (_env("INSTAGRAM_APP_SECRET", default="") or "").strip()
+GOOGLE_CLIENT_ID = (_env("GOOGLE_CLIENT_ID", default="") or "").strip()
+GOOGLE_CLIENT_SECRET = (_env("GOOGLE_CLIENT_SECRET", default="") or "").strip()
+# Meta's Graph API version for Instagram calls.
+INSTAGRAM_API_VERSION = (_env("INSTAGRAM_API_VERSION", default="v27.0") or "v27.0").strip()
+# Most posts each connected account may make per 24 hours (the platforms' own limits, a little under).
+TIKTOK_POSTS_PER_DAY = max(1, _int("TIKTOK_POSTS_PER_DAY", default=15))
+INSTAGRAM_POSTS_PER_DAY = max(1, _int("INSTAGRAM_POSTS_PER_DAY", default=50))
+# YouTube allows each developer project about 100 uploads a day across all channels.
+YOUTUBE_UPLOADS_PER_DAY = max(1, _int("YOUTUBE_UPLOADS_PER_DAY", default=100))
+# Shown on the privacy policy and terms pages, which the platforms require. Empty = no address shown.
+CONTACT_EMAIL = (_env("CONTACT_EMAIL", default="") or "").strip()
+# Most social accounts one user may connect (per platform).
+MAX_SOCIAL_ACCOUNTS = max(1, _int("MAX_SOCIAL_ACCOUNTS", default=20))
+
 # An unfinished upload with no new piece for this long is deleted (the user can start it again).
 UPLOAD_EXPIRY_HOURS = max(1, _int("UPLOAD_EXPIRY_HOURS", default=24))
 UPLOAD_CHUNK_MB = min(64, max(1, _int("UPLOAD_CHUNK_MB", default=8)))  # size of each upload piece

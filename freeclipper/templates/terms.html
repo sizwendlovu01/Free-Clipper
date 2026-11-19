@@ -1,0 +1,59 @@
+{% extends "public_base.html" %}
+{% block title %}Terms of Service - {{ brand.app_name }}{% endblock %}
+{% block announce %}{% endblock %}
+{% block main %}
+<main id="main" class="legal-page">
+  <div class="wrap">
+    <h1>Terms of Service</h1>
+    <p class="updated">Last updated: 19 November 2026</p>
+
+    <p>By using {{ brand.app_name }} ("the service") you agree to these terms. If you don't agree, don't use the service.</p>
+
+    <h2>What the service does</h2>
+    <p>{{ brand.app_name }} makes short clips from videos you provide, adds captions and titles, and, when you choose,
+      posts the clips to TikTok, Instagram or YouTube accounts you have connected.</p>
+
+    <h2>Your content</h2>
+    <ul>
+      <li>Only upload or link videos you own or have permission to use, including the music in them.</li>
+      <li>You keep all rights to your videos and clips. You give us permission to store and process them only to
+        provide the service to you.</li>
+      <li>You are responsible for what you post, and for following the rules of each platform you post to.</li>
+    </ul>
+
+    <h2>Connected accounts and posting</h2>
+    <ul>
+      <li>Only connect accounts you own or are authorised to manage.</li>
+      <li>We post only the clips you choose, with the caption and settings you approve. Posts can take a few minutes to
+        appear while the platform processes them.</li>
+      <li>Each platform limits how often you can post, and may restrict, review or remove posts under its own rules.
+        We can't override those decisions.</li>
+      <li>By posting to TikTok you agree to TikTok's
+        <a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" rel="noopener">Music Usage Confirmation</a>
+        and, for branded content, its <a href="https://www.tiktok.com/legal/page/global/bc-policy/en" rel="noopener">Branded Content Policy</a>.
+        By posting to YouTube you agree to the <a href="https://www.youtube.com/t/terms" rel="noopener">YouTube Terms of Service</a>.</li>
+    </ul>
+
+    <h2>Acceptable use</h2>
+    <p>Don't use the service to post spam, misleading content, or anything illegal, hateful or infringing, and don't try
+      to get around a platform's limits or our own. We may suspend accounts that do.</p>
+
+    <h2>Availability</h2>
+    <p>We work to keep the service running, but it's provided "as is", without guarantees. Projects are deleted
+      automatically{% if retention_text %} {{ retention_text }} after they were last changed{% endif %}, so download
+      anything you want to keep.</p>
+
+    <h2>Liability</h2>
+    <p>To the extent the law allows, we aren't liable for lost content, lost reach or followers, platform penalties, or
+      indirect damages arising from your use of the service.</p>
+
+    <h2>Ending your use</h2>
+    <p>You can stop using the service, disconnect accounts and delete your content at any time. See the
+      <a href="/privacy">Privacy Policy</a> for how your data is handled.</p>
+
+    <h2>Changes and contact</h2>
+    <p>If these terms change, the date at the top changes too. Questions:
+      {% if contact %}<a href="mailto:{{ contact }}">{{ contact }}</a>{% else %}contact the administrator of this service{% endif %}.</p>
+  </div>
+</main>
+{% endblock %}

@@ -1,0 +1,78 @@
+{% extends "public_base.html" %}
+{% block title %}Privacy Policy - {{ brand.app_name }}{% endblock %}
+{% block announce %}{% endblock %}
+{% block main %}
+<main id="main" class="legal-page">
+  <div class="wrap">
+    <h1>Privacy Policy</h1>
+    <p class="updated">Last updated: 19 November 2026</p>
+
+    <p>This policy explains what {{ brand.app_name }} ("we", "the service") collects, why, and how you control it.
+      {{ brand.app_name }} turns long videos into short clips and, if you choose, posts those clips to the TikTok,
+      Instagram and YouTube accounts you connect.</p>
+
+    <h2>What we collect</h2>
+    <ul>
+      <li><b>Your account:</b> your username and a securely hashed password. We never store your password in readable form.</li>
+      <li><b>Videos you provide:</b> files you upload or links you paste, the clips made from them, their transcripts,
+        titles and hashtags.</li>
+      <li><b>Connected social accounts:</b> when you connect a TikTok, Instagram or YouTube account, the platform gives us
+        an access key for that account, plus its public profile name, username and profile picture. We never see or
+        store your password for those platforms.</li>
+      <li><b>Posting history:</b> which clips you posted to which account, when, and the link to the published post.</li>
+      <li><b>Technical logs:</b> error reports needed to keep the service running.</li>
+    </ul>
+
+    <h2>How we use it</h2>
+    <ul>
+      <li>To make your clips and show them only to you.</li>
+      <li>To post a clip to a connected account <b>only when you ask us to</b>, with the caption and settings you
+        choose. We do not post, like, comment, follow or message on your behalf in any other way.</li>
+      <li>To read your connected account's basic profile so you can tell your accounts apart.</li>
+    </ul>
+    <p>We do not sell your data, use it for advertising, or share it with anyone except the platforms you post to and
+      the storage provider described below.</p>
+
+    <h2>How we protect it</h2>
+    <p>Access keys for connected accounts are encrypted before they are stored. Your videos and clips are private to
+      your account. Connections to the service use HTTPS.</p>
+
+    <h2>How long we keep it</h2>
+    <ul>
+      {% if retention_text %}<li>Projects, clips and transcripts are deleted automatically {{ retention_text }} after they were last changed.</li>{% endif %}
+      <li>Connected account keys are kept until you disconnect the account or delete your {{ brand.app_name }} account.</li>
+      <li>Posting history is kept until you delete your {{ brand.app_name }} account.</li>
+    </ul>
+
+    <h2>Your choices</h2>
+    <ul>
+      <li><b>Disconnect an account</b> at any time in Settings, under Connected accounts. Its keys are deleted at once.</li>
+      <li>You can also remove {{ brand.app_name }}'s access from the platform itself: in TikTok's settings under
+        security and permissions, in Instagram's settings under apps and websites, or in your Google account's
+        third-party access page at <a href="https://security.google.com/settings/security/permissions" rel="noopener">security.google.com/settings/security/permissions</a>.</li>
+      <li><b>Delete projects</b> and clips yourself at any time, or ask us to delete your whole account and everything in it.</li>
+    </ul>
+
+    <h2>Third-party services</h2>
+    <ul>
+      <li><b>TikTok, Instagram (Meta) and YouTube (Google):</b> clips you post are sent to them and are then covered by
+        their own policies. {{ brand.app_name }} uses the YouTube API Services; by connecting a YouTube channel you agree
+        to the <a href="https://www.youtube.com/t/terms" rel="noopener">YouTube Terms of Service</a>, and Google's use of
+        your data is covered by the <a href="https://policies.google.com/privacy" rel="noopener">Google Privacy Policy</a>.</li>
+      <li><b>Cloud storage:</b> clips may be stored with Cloudflare R2, a private storage service, so they can be
+        played and downloaded.</li>
+    </ul>
+
+    <h2>Cookies</h2>
+    <p>We use one cookie to keep you signed in. We use no advertising or tracking cookies.</p>
+
+    <h2>Children</h2>
+    <p>The service is not intended for anyone under 13, or under the minimum age to use TikTok, Instagram or YouTube in
+      their country.</p>
+
+    <h2>Changes and contact</h2>
+    <p>If this policy changes, the date at the top changes too. Questions or deletion requests:
+      {% if contact %}<a href="mailto:{{ contact }}">{{ contact }}</a>{% else %}contact the administrator of this service{% endif %}.</p>
+  </div>
+</main>
+{% endblock %}

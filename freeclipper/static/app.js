@@ -324,3 +324,215 @@ function layoutPicker(select) {
   mark();
   return { refresh: mark };
 }
+
+// ---- Auto-post: send a clip to connected TikTok, Instagram and YouTube accounts ----
+// Each ticked account gets its own caption (different wording per account, so it doesn't look like spam).
+// The TikTok section follows TikTok's posting rules: who-can-see has no default, interactions start off,
+// commercial content is disclosed, and the Music Usage Confirmation is shown before posting.
+const TT_PRIVACY = { PUBLIC_TO_EVERYONE: "Everyone", MUTUAL_FOLLOW_FRIENDS: "Friends", FOLLOWER_OF_CREATOR: "Followers", SELF_ONLY: "Only me" };
+const PLATFORM_ICON = { tiktok: "♪", instagram: "◎", youtube: "▶" };
+const MUSIC_URL = "https://www.tiktok.com/legal/page/global/music-usage-confirmation/en";
+const BC_URL = "https://www.tiktok.com/legal/page/global/bc-policy/en";
+
+function acctName(a) { return a.username ? "@" + a.username : a.display_name; }
+function acctAvatar(a, size = 28) {
+  return a.avatar_url
+    ? `<img class="acct-av" src="${esc(a.avatar_url)}" alt="" width="${size}" height="${size}" referrerpolicy="no-referrer" loading="lazy">`
+    : `<span class="acct-av ph" style="width:${size}px;height:${size}px">${PLATFORM_ICON[a.platform] || "•"}</span>`;
+}
+
+async function autoPost(c) {
+  let data;
+  try { data = await api("/api/social/accounts"); } catch (e) { return toast(e.message, true); }
+  const accounts = data.accounts;
+  if (!accounts.length) {
+    const m = modal(`<h2>Auto-post this clip</h2>
+      <p>Connect your TikTok, Instagram or YouTube accounts first. You can connect as many as you like.</p>
+      <div class="row"><a class="btn primary" href="/settings#accounts">Connect accounts</a><button id="apclose">Close</button></div>`);
+    m.querySelector("#apclose").onclick = () => m.remove();
+    return;
+  }
+  // Accounts this clip already went to (or is waiting for) can't be picked again.
+  const already = new Map();
+  try {
+    for (const p of (await api(`/api/posts?clip_id=${c.id}`)).posts)
+      if (["queued", "posting", "posted"].includes(p.status) && !already.has(p.account_id))
+        already.set(p.account_id, p.status === "posted" ? "already posted" : "waiting to post");
+  } catch (_) {}
+  const note = a => a.status !== "ok" ? "reconnect in Settings" : already.get(a.id) || `${a.posts_today}/${a.daily_limit} today`;
+  const off = a => a.status !== "ok" || already.has(a.id);
+  const m = modal(`<h2>Auto-post this clip</h2>
+    <div class="ap-top"><video src="${c.files.video}" muted playsinline controls preload="metadata" poster="${c.files.thumb}"></video>
+      <div><p class="small muted" style="margin-top:0">Tick the accounts to post to. Each one gets its own caption, which you can edit.</p>
+        <div class="ap-accounts">${accounts.map(a => `<label class="check ap-acct${off(a) ? " off" : ""}">
+          <input type="checkbox" data-acct="${a.id}" ${off(a) ? "disabled" : ""}>${acctAvatar(a)}
+          <span><b>${esc(acctName(a))}</b><br><span class="small muted">${esc(a.platform_label)} · ${esc(note(a))}</span></span></label>`).join("")}</div>
+        <p class="small"><a href="/settings#accounts">Manage accounts</a></p></div></div>
+    <div id="ap-targets"></div>
+    <div class="field"><label for="ap-spacing">When</label><select id="ap-spacing">
+      <option value="0">Post to all now</option><option value="15" selected>One account every 15 minutes</option>
+      <option value="30">One account every 30 minutes</option><option value="60">One account every hour</option></select>
+      <p class="small muted" style="margin:6px 0 0">Spacing posts out looks more natural to the platforms. After a clip is sent it can take a few minutes to appear.</p></div>
+    <div class="row" style="margin-top:14px"><button class="primary" id="apgo" disabled>Post</button><button id="apcancel">Cancel</button>
+      <span class="small muted" id="aphint"></span></div>`);
+  m.querySelector(".card").classList.add("wide");
+  m.querySelector("#apcancel").onclick = () => m.remove();
+  const box = m.querySelector("#ap-targets");
+  const state = new Map();  // account id -> { account, el, info }
+  const byId = new Map(accounts.map(a => [a.id, a]));
+
+  async function sync() {
+    const ticked = [...m.querySelectorAll("[data-acct]:checked")].map(i => +i.dataset.acct);
+    for (const id of [...state.keys()]) if (!ticked.includes(id)) { state.get(id).el.remove(); state.delete(id); }
+    const added = ticked.filter(id => !state.has(id));
+    for (const id of added) {
+      const el = document.createElement("div");
+      el.className = "ap-target";
+      el.innerHTML = `<p class="small muted">Loading ${esc(acctName(byId.get(id)))}…</p>`;
+      box.appendChild(el);
+      state.set(id, { account: byId.get(id), el, info: null, ready: false });
+    }
+    if (added.length) {
+      // Ask for captions for every ticked account in order, so each new one gets a different variant.
+      let variants = [];
+      try { variants = (await api(`/api/clips/${c.id}/post-text?accounts=${ticked.join(",")}`)).variants; }
+      catch (e) { toast(e.message, true); }
+      for (const id of added) {
+        const s = state.get(id);
+        if (!s) continue;
+        const v = variants.find(x => x.account_id === id) || { title: c.title, caption: postText(c) };
+        if (s.account.platform === "tiktok") {
+          try { s.info = await api(`/api/social/accounts/${id}/tiktok`); }
+          catch (e) { s.el.innerHTML = `<p class="small" style="color:var(--danger)">${esc(acctName(s.account))}: ${esc(e.message)}</p>`; s.error = true; continue; }
+        }
+        s.el.innerHTML = targetForm(s, v, c);
+        s.ready = true;
+        wire(s);
+      }
+    }
+    check();
+  }
+
+  function check() {
+    let problem = "";
+    const list = [...state.values()];
+    if (!list.length) problem = "Tick at least one account.";
+    for (const s of list) {
+      if (problem) break;
+      const name = acctName(s.account);
+      if (s.error) problem = `Untick ${name}: it can't post right now.`;
+      else if (!s.ready) problem = "Loading…";
+      else if (s.tooLong) problem = `${name} can't post a clip this long.`;
+      else if (s.account.platform === "tiktok") {
+        if (!s.el.querySelector(".tt-privacy").value) problem = `Choose who can see the TikTok post on ${name}.`;
+        else if (s.el.querySelector(".tt-commercial").checked && !s.el.querySelector(".tt-organic").checked && !s.el.querySelector(".tt-branded").checked)
+          problem = "You need to indicate if your content promotes yourself, a third party, or both.";
+      } else if (s.account.platform === "youtube" && !s.el.querySelector(".yt-title").value.trim()) problem = `Give the YouTube video on ${name} a title.`;
+    }
+    m.querySelector("#apgo").disabled = !!problem;
+    m.querySelector("#aphint").textContent = problem;
+    m.querySelector("#apgo").title = problem;
+  }
+
+  function wire(s) {
+    s.el.querySelectorAll("input, select, textarea").forEach(i => i.addEventListener("input", () => { tiktokRules(s); check(); }));
+    s.el.querySelectorAll("input[type=checkbox], select").forEach(i => i.addEventListener("change", () => { tiktokRules(s); check(); }));
+    tiktokRules(s);
+  }
+
+  m.querySelectorAll("[data-acct]").forEach(i => i.addEventListener("change", sync));
+  m.querySelector("#apgo").onclick = e => withBusy(e.currentTarget, async () => {
+    const targets = [...state.values()].map(s => {
+      const q = sel => s.el.querySelector(sel);
+      const t = { account_id: s.account.id, caption: q(".ap-caption").value };
+      if (s.account.platform === "tiktok") Object.assign(t, {
+        privacy: q(".tt-privacy").value, allow_comment: q(".tt-comment").checked, allow_duet: q(".tt-duet").checked,
+        allow_stitch: q(".tt-stitch").checked, commercial: q(".tt-commercial").checked,
+        brand_organic: q(".tt-organic").checked, brand_content: q(".tt-branded").checked, consent: true });
+      if (s.account.platform === "youtube") Object.assign(t, { title: q(".yt-title").value, privacy: q(".yt-privacy").value });
+      return t;
+    });
+    const r = await api(`/api/clips/${c.id}/posts`, { method: "POST",
+      body: { targets, spacing_minutes: +m.querySelector("#ap-spacing").value } });
+    m.remove();
+    toast(r.posts.length === 1 ? "Queued: it will post in a moment" : `Queued ${r.posts.length} posts`);
+    if (typeof loadPosts === "function") loadPosts();
+  }, "Queuing…");
+  check();
+}
+
+function targetForm(s, v, c) {
+  const a = s.account;
+  const head = `<div class="ap-head">${acctAvatar(a, 24)}<b>${esc(a.platform_label)}: ${esc(acctName(a))}</b></div>`;
+  const caption = (label, rows = 3) => `<div class="field"><label>${label}</label><textarea class="ap-caption" rows="${rows}" maxlength="2200">${esc(v.caption)}</textarea></div>`;
+  if (a.platform === "youtube") return head + `
+    <div class="field"><label>Title</label><input class="yt-title" type="text" maxlength="100" value="${esc(v.title.slice(0, 100))}"></div>
+    ${caption("Description")}
+    <div class="field"><label>Visibility</label><select class="yt-privacy"><option value="public">Public</option><option value="unlisted">Unlisted</option><option value="private">Private</option></select></div>`;
+  if (a.platform === "instagram") return head + caption("Caption") + `<p class="small muted">Posted as a Reel and shared to the feed.</p>`;
+  // TikTok
+  const i = s.info;
+  const dur = c.duration;
+  s.tooLong = !!(i.max_duration && dur > i.max_duration + 0.5);
+  const opts = i.privacy_options.map(p => `<option value="${p}">${TT_PRIVACY[p] || p}</option>`).join("");
+  const box = (cls, label, off) => `<label class="check${off ? " off" : ""}" ${off ? 'title="This account has turned this off on TikTok."' : ""}><input type="checkbox" class="${cls}" ${off ? "disabled" : ""}> ${label}</label>`;
+  return head + `
+    <p class="small muted" style="margin-top:-4px">Posting as <b>${esc(i.nickname)}</b>${i.username ? ` (@${esc(i.username)})` : ""}.</p>
+    ${s.tooLong ? `<p class="small" style="color:var(--danger)">This account can post videos up to ${i.max_duration} seconds; this clip is ${Math.round(dur)} seconds.</p>` : ""}
+    ${caption("Caption")}
+    <div class="field"><label>Who can see this video</label><select class="tt-privacy"><option value="" selected disabled>Choose…</option>${opts}</select>
+      ${i.audited ? "" : `<p class="small muted" style="margin:6px 0 0">Until TikTok approves this app, TikTok posts can only be private (Only me).</p>`}</div>
+    <div class="field"><label>Allow users to</label><div class="row">
+      ${box("tt-comment", "Comment", i.comment_disabled)}${box("tt-duet", "Duet", i.duet_disabled)}${box("tt-stitch", "Stitch", i.stitch_disabled)}</div></div>
+    <div class="field"><label class="check"><input type="checkbox" class="tt-commercial"> Disclose video content</label>
+      <p class="small muted" style="margin:4px 0 0">Turn this on if this video promotes goods or services in exchange for something of value.</p>
+      <div class="tt-commercial-opts" hidden>
+        <label class="check"><input type="checkbox" class="tt-organic"> Your brand <span class="small muted">: you are promoting yourself or your own business</span></label>
+        <label class="check"><input type="checkbox" class="tt-branded"> Branded content <span class="small muted">: you are promoting another brand or a third party</span></label>
+        <p class="small tt-label" style="color:var(--warn);margin:6px 0 0"></p></div></div>
+    <p class="small muted tt-declare"></p>`;
+}
+
+// TikTok's rules for the commercial content disclosure and the declaration shown before posting.
+function tiktokRules(s) {
+  const q = sel => s.el.querySelector(sel);
+  if (s.account.platform !== "tiktok" || !q(".tt-privacy")) return;
+  const on = q(".tt-commercial").checked, organic = on && q(".tt-organic").checked, branded = on && q(".tt-branded").checked;
+  q(".tt-commercial-opts").hidden = !on;
+  q(".tt-label").textContent = branded ? "Your video will be labeled “Paid partnership”."
+    : organic ? "Your video will be labeled “Promotional content”." : on ? "You need to indicate if your content promotes yourself, a third party, or both." : "";
+  const priv = q(".tt-privacy"), self = priv.querySelector('option[value="SELF_ONLY"]');
+  if (self) {
+    self.disabled = branded;
+    self.title = branded ? "Branded content visibility cannot be set to private." : "";
+    if (branded && priv.value === "SELF_ONLY") { priv.value = ""; toast("Branded content visibility cannot be set to private.", true); }
+  }
+  q(".tt-declare").innerHTML = branded
+    ? `By posting, you agree to TikTok's <a href="${BC_URL}" target="_blank" rel="noopener">Branded Content Policy</a> and <a href="${MUSIC_URL}" target="_blank" rel="noopener">Music Usage Confirmation</a>.`
+    : `By posting, you agree to TikTok's <a href="${MUSIC_URL}" target="_blank" rel="noopener">Music Usage Confirmation</a>.`;
+}
+
+// Post status under each clip: where it went, and whether it worked.
+const POST_STATUS = { queued: ["Waiting", "queued"], posting: ["Posting", "queued"], posted: ["Posted", "done"],
+  failed: ["Failed", "failed"], cancelled: ["Cancelled", "cancelled"] };
+function postRows(posts) {
+  return posts.map(p => {
+    const [label, cls] = POST_STATUS[p.status] || [p.status, ""];
+    const when = p.status === "queued" && new Date(p.scheduled_at) > Date.now()
+      ? ` at ${new Date(p.scheduled_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
+    const detail = p.status === "failed" ? p.error : p.status === "posted" ? (p.stage !== "Posted" ? p.stage : "") : p.stage;
+    return `<div class="post-row"><span class="pf">${esc(p.platform_label)}</span>
+      <span class="who">${esc(p.account)}</span>
+      <span class="badge ${cls}">${label}${when}</span>
+      ${p.url ? `<a class="small" href="${esc(p.url)}" target="_blank" rel="noopener">View</a>` : ""}
+      ${p.status === "failed" || p.status === "cancelled" ? `<button class="sm" onclick="retryPost(${p.id}, this)">Retry</button>` : ""}
+      ${p.status === "queued" ? `<button class="sm" onclick="cancelPost(${p.id}, this)">Cancel</button>` : ""}
+      ${detail ? `<div class="small muted detail">${esc(detail)}</div>` : ""}</div>`;
+  }).join("");
+}
+function retryPost(id, btn) {
+  withBusy(btn, async () => { await api(`/api/posts/${id}/retry`, { method: "POST" }); toast("Trying again"); if (typeof loadPosts === "function") loadPosts(); });
+}
+function cancelPost(id, btn) {
+  withBusy(btn, async () => { await api(`/api/posts/${id}`, { method: "DELETE" }); toast("Cancelled"); if (typeof loadPosts === "function") loadPosts(); });
+}

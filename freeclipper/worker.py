@@ -249,8 +249,15 @@ class Runner:
         for i in range(self.workers):
             self._spawn(self._loop, f"clip-worker-{i}")
         self._spawn(self._janitor, "janitor")
+        self._spawn(self._poster, "poster")
         if config.PRELOAD_WHISPER:
             self._spawn(self._preload, "model-preload")
+
+    def _poster(self) -> None:
+        """Sends queued posts to TikTok, Instagram and YouTube (see social.py)."""
+        from . import social
+
+        social.poster_loop(lambda: self._stopping)
 
     def _spawn(self, target, name: str) -> None:
         t = threading.Thread(target=target, name=name, daemon=True)

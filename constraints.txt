@@ -8,7 +8,9 @@ av==19.0.2
 boto3==1.44.6
 botocore==1.44.6
 certifi==2026.10.23
+cffi==2.1.1
 click==8.5.1
+cryptography==50.0.2
 ctranslate2==4.9.0
 docstring_parser==0.18.0
 fastapi==0.162.4
@@ -36,6 +38,7 @@ opencv-python-headless==4.14.0.94
 opentelemetry-api==1.45.2
 packaging==26.3
 protobuf==7.36.2
+pycparser==3.12
 pydantic==2.14.3
 pydantic_core==2.50.4
 python-dateutil==2.9.0.post0

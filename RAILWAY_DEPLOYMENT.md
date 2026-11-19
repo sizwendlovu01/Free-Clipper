@@ -323,3 +323,59 @@ transcripts. Viewers play and download clips through private links that expire a
 The app never stores more than `R2_MAX_STORAGE_GB` (default 9) in the bucket, to stay inside the free tier;
 past that, new videos are refused until older projects expire or are deleted. For the Share button to
 fetch clips, the bucket needs a CORS rule allowing `GET`/`HEAD` from your site's address.
+
+## Optional: auto-post to TikTok, Instagram and YouTube
+
+Users connect their own accounts in **Settings > Connected accounts** (any number per platform), then press
+**Auto-post** on a clip, tick accounts, and the app posts in the background. Each account gets its own
+caption, posts can be spaced 15 to 60 minutes apart, and each account's daily limit is respected (a post
+over the limit waits instead of failing). Account keys are stored encrypted with `SECRET_KEY`: if you ever
+change `SECRET_KEY`, everyone has to reconnect their accounts.
+
+Each platform needs a developer app, registered once by you. Use these redirect URLs (Settings shows the
+exact ones for your domain to admins), and the app's `/privacy` and `/terms` pages as the privacy policy
+and terms of service links.
+
+| Platform | Redirect URL |
+|---|---|
+| TikTok | `https://<your-domain>/oauth/tiktok/callback` |
+| Instagram | `https://<your-domain>/oauth/instagram/callback` |
+| YouTube | `https://<your-domain>/oauth/youtube/callback` |
+
+**TikTok** ([developers.tiktok.com/apps](https://developers.tiktok.com/apps)): create an app, add **Login Kit**
+and **Content Posting API** (turn on Direct Post), request the scopes `user.info.basic` and `video.publish`,
+and add the redirect URL. Put the **Client key** and **Client secret** in `TIKTOK_CLIENT_KEY` and
+`TIKTOK_CLIENT_SECRET`. Until TikTok audits the app, every post is private ("Only me"), at most 5 accounts
+can post through the app per day, and the TikTok account must be set to private. The posting screen
+already follows TikTok's posting rules for the audit. After TikTok approves the app, set
+`TIKTOK_AUDITED=true`.
+
+**Instagram** ([developers.facebook.com/apps](https://developers.facebook.com/apps)): create an app with the
+Instagram use case (API setup with Instagram login), add the redirect URL under Business login settings,
+and request `instagram_business_basic` and `instagram_business_content_publish`. Put the **Instagram app
+ID** and **Instagram app secret** (shown in the Instagram section, not the Meta app's own ID) in
+`INSTAGRAM_APP_ID` and `INSTAGRAM_APP_SECRET`. Only Business or Creator accounts can post. Until Meta's App
+Review approves the app, only accounts added as testers in the app can connect. Instagram downloads each
+video itself, so the app must be reachable at its public address (`PUBLIC_DOMAIN`, set automatically on
+Railway).
+
+**YouTube** ([console.cloud.google.com](https://console.cloud.google.com/projectcreate)): create a project,
+enable **YouTube Data API v3**, set up the OAuth consent screen (External), and create an **OAuth client
+ID** of type Web application with the redirect URL. Put the client ID and secret in `GOOGLE_CLIENT_ID`
+and `GOOGLE_CLIENT_SECRET`. While the consent screen is in Testing, only test users you add can connect,
+and Google ends their sign-in after 7 days (they reconnect in Settings). Publish and verify the consent
+screen to lift that.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` | (empty) | TikTok developer app keys. Empty = no TikTok. |
+| `TIKTOK_AUDITED` | false | Set to true once TikTok has approved the app (allows public posts). |
+| `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET` | (empty) | Instagram app keys (Instagram API with Instagram Login). |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | (empty) | Google OAuth client for YouTube uploads. |
+| `TIKTOK_POSTS_PER_DAY` | 15 | Most posts per TikTok account per 24 hours. |
+| `INSTAGRAM_POSTS_PER_DAY` | 50 | Most posts per Instagram account per 24 hours. |
+| `YOUTUBE_UPLOADS_PER_DAY` | 100 | Most YouTube uploads per 24 hours across all channels (the project's upload allowance). |
+| `MAX_SOCIAL_ACCOUNTS` | 20 | Most accounts one user can connect per platform. |
+| `CONTACT_EMAIL` | (empty) | Shown on the privacy and terms pages. |
+
+Test without real accounts: `python tests/social_test.py` runs the whole flow against fake platforms.

@@ -96,6 +96,49 @@ CREATE TABLE IF NOT EXISTS events (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_time ON events(created_at);
+CREATE TABLE IF NOT EXISTS social_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    username TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    avatar_url TEXT NOT NULL DEFAULT '',
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    expires_at TEXT,
+    refresh_expires_at TEXT,
+    scopes TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'ok',
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, platform, external_id)
+);
+CREATE TABLE IF NOT EXISTS posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    clip_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    caption TEXT NOT NULL DEFAULT '',
+    options TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL,
+    stage TEXT NOT NULL DEFAULT '',
+    scheduled_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    external_id TEXT,
+    url TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    posted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS posts_due ON posts(status, scheduled_at);
+CREATE INDEX IF NOT EXISTS posts_clip ON posts(clip_id);
+CREATE INDEX IF NOT EXISTS posts_account ON posts(account_id, posted_at);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
