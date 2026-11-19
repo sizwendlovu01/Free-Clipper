@@ -404,6 +404,7 @@ def dashboard(request: Request):
     return page(request, "dashboard.html", user, aspects=list(ASPECTS), whisper_models=config.WHISPER_MODELS,
                 default_model=config.WHISPER_MODEL, max_upload_mb=config.MAX_UPLOAD_MB,
                 max_video_minutes=config.MAX_VIDEO_SECONDS // 60, max_clips=config.MAX_CLIPS_PER_JOB,
+                english_only=config.ENGLISH_ONLY,
                 retention_hours=config.PROJECT_RETENTION_HOURS)
 
 

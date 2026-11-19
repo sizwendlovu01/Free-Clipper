@@ -416,13 +416,22 @@ class Runner:
                 want_model = config.WHISPER_MODEL
             want_lang = opts.get("language") or None
             want_task = "translate" if opts.get("translate") else "transcribe"
+            english_only = config.ENGLISH_ONLY
             use_captions = opts.get("transcript_source", "auto") == "auto" and job["source_type"] == "url"
             transcript = json.loads(tpath.read_text(encoding="utf-8")) if tpath.exists() else None
             if transcript:
                 from_captions = transcript.get("model") == transcribe.CAPTIONS_MODEL
-                if (from_captions and not use_captions) or (not from_captions and (
+                if english_only:  # a saved transcript is reused only if it's English
+                    stale = transcript.get("language") != "en" or not transcribe.is_english(
+                        transcript.get("segments") or []) or (
+                        not from_captions and transcript.get("model") != want_model) or (from_captions and not use_captions)
+                elif (from_captions and not use_captions) or (not from_captions and (
                         transcript.get("model") != want_model or transcript.get("task") != want_task
                         or (want_lang and transcript.get("language") != want_lang))):
+                    stale = True
+                else:
+                    stale = False
+                if stale:
                     transcript = None
             duration = float(transcript["duration"]) if transcript and transcript.get("duration") else None
 
@@ -448,6 +457,9 @@ class Runner:
                     cpath, meta = ingest.download_captions(job["source"], jdir, stop)
                     title = title or meta.get("title")
                     lang = meta.get("caption_lang") or meta.get("language")
+                    if cpath and english_only and lang != "en":
+                        cpath = None  # captions in another language: transcribe and translate locally
+                        notes.append("This video isn't in English; its speech was translated to English.")
                     if cpath and not (want_task == "translate" and lang != "en"):
                         transcript = transcribe.from_json3(cpath, lang, meta.get("duration"))
                         duration = transcript["duration"]
@@ -513,7 +525,12 @@ class Runner:
                     transcribe.get_model(want_model)
                 prog.set(0.05, label, force=True)
                 try:
-                    transcript = transcribe.transcribe(audio, want_model, want_lang, want_task, on_transcribe, stop)
+                    transcript = transcribe.transcribe(audio, want_model, want_lang, want_task, on_transcribe, stop,
+                                                       english_only=english_only)
+                    if english_only and transcript.get("spoken_language", "en") != "en":
+                        note = "This video isn't in English; its speech was translated to English."
+                        if note not in notes:
+                            notes.append(note)
                 finally:
                     transcribe.release()  # give the memory back before rendering
                 self._save_transcript(jdir, transcript)

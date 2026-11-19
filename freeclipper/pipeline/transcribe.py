@@ -175,12 +175,65 @@ def phrases(words: list[dict], sep: str = " ") -> list[dict]:
              "words": g} for g in groups]
 
 
-def transcribe(audio: Path, model_size: str, language: str | None, task: str,
-               progress: Callable[[float], None], should_stop: Callable[[], bool]) -> dict:
-    from faster_whisper import BatchedInferencePipeline
+# Very common English words that are rarely words in other languages. English speech is typically 35-50%
+# these; other languages close to none. Used to catch a transcript that came out in the wrong language.
+_ENGLISH_WORDS = frozenset("""
+the and to of you that it is was for this with have what are be just like not they we so but my your do
+know if can get at all about there one out would when how she him her our been will from or an gonna
+because really think people going yeah oh right now okay they're i'm it's don't that's can't here then
+them some which who why where did does has had were more very also only even want see make got go said
+say thing things something time you're we're i've didn't doesn't wasn't won't let's there's what's
+""".split())
 
+
+def is_english(segments: list[dict]) -> bool:
+    """Does this transcript read as English? Short ones (under 15 words) get the benefit of the doubt."""
+    import re
+
+    words = re.findall(r"[^\W\d_]+(?:'[^\W\d_]+)?", " ".join(s.get("text", "") for s in segments).lower())
+    if len(words) < 15:
+        return True
+    latin = sum(1 for w in words if w.isascii())
+    if latin < len(words) * 0.6:
+        return False  # mostly another script (Cyrillic, Arabic, CJK...)
+    return sum(1 for w in words if w in _ENGLISH_WORDS) >= len(words) * 0.15
+
+
+def transcribe(audio: Path, model_size: str, language: str | None, task: str,
+               progress: Callable[[float], None], should_stop: Callable[[], bool],
+               english_only: bool = False) -> dict:
+    """Speech to timed text. With english_only, the result is always English: English speech is
+    transcribed, any other language is translated to English as it's transcribed."""
     model = get_model(model_size)
     samples = load_wav(audio)
+    spoken = language
+    ranked: list[str] = []
+    if english_only:
+        if not language or language == "en":
+            # Check what is actually spoken (several stretches, skipping silence) before choosing.
+            try:
+                detected, _prob, probs = model.detect_language(audio=samples, vad_filter=True,
+                                                               language_detection_segments=4)
+                ranked = [lang for lang, _ in sorted(probs, key=lambda x: -x[1])]
+            except Exception:
+                detected = "en"
+            spoken = detected
+        language, task = (("en", "transcribe") if spoken == "en" else (spoken, "translate"))
+    result = _transcribe_pass(model, samples, model_size, language, task, progress, should_stop)
+    if english_only and task == "transcribe" and not is_english(result["segments"]):
+        # Detection said English (an accent, music, a mixed intro) but the words came out in another
+        # language: translate it to English instead, from the likeliest other language.
+        spoken = next((lang for lang in ranked if lang != "en"), None) or (
+            result["language"] if result["language"] != "en" else "es")
+        result = _transcribe_pass(model, samples, model_size, spoken, "translate", progress, should_stop)
+    result["spoken_language"] = spoken or result["language"]
+    return result
+
+
+def _transcribe_pass(model, samples, model_size: str, language: str | None, task: str,
+                     progress: Callable[[float], None], should_stop: Callable[[], bool]) -> dict:
+    from faster_whisper import BatchedInferencePipeline
+
     device, _ = _device()
     pipeline = BatchedInferencePipeline(model)
     try:
@@ -222,7 +275,8 @@ def transcribe(audio: Path, model_size: str, language: str | None, task: str,
     if out and all(s["words"] for s in out):
         out = phrases([w for s in out for w in s["words"]], joiner(info.language))
     return {
-        "language": info.language,
+        # The language of the text: English when it was translated.
+        "language": "en" if task == "translate" else info.language,
         "language_probability": round(float(info.language_probability or 0), 3),
         "duration": float(info.duration or 0),
         "model": model_size,

@@ -178,6 +178,7 @@ All optional except where noted. Names in brackets are older aliases that still 
 | `CLEANUP_INTERVAL_MINUTES` | 120 | How often cleanup runs (expired projects, orphaned files, temp files, abandoned jobs). |
 | `MAX_VIDEO_DURATION` | 7200 | Longest video in seconds (2 hours). Jobs get a time limit of 30 min + 2x the video length. |
 | `SOURCE_RETENTION_DAYS` | 0 (keep) | Delete source videos after N days. Clips stay; they just can't be re-rendered. |
+| `ENGLISH_ONLY` | true | Clips, captions, titles and hashtags are always in English. Speech in any other language is translated to English. Set to `false` to keep each video's own language. |
 | `WHISPER_MODEL` | small | Default transcription model. `base` is the best fit for small servers. |
 | `WHISPER_ALLOWED_MODELS` | all | Restrict choices, e.g. `tiny,base,small` (large models need several GB of RAM). |
 | `WHISPER_CPU_THREADS`, `WHISPER_BATCH_SIZE` | auto | Threads follow the CPUs granted to the service; batch size is 8, or 1 in low-memory mode (which also turns off the MKL backend to save ~200 MB). Lower `WHISPER_BATCH_SIZE` if transcription runs out of memory. |

@@ -250,6 +250,9 @@ X264_PRESET = _env("FC_X264_PRESET", default="veryfast")
 X264_CRF = _int("FC_X264_CRF", default=20)
 
 # ---------------- transcription (faster-whisper, runs locally) ----------------
+# Clips, captions, titles and hashtags are always in English: speech in any other language is
+# translated to English while it's transcribed. Set to false to keep each video's own language.
+ENGLISH_ONLY = _bool("ENGLISH_ONLY", default=True)
 WHISPER_MODEL = _env("WHISPER_MODEL", "FC_WHISPER_MODEL", default="small")
 WHISPER_DEVICE = _env("FC_WHISPER_DEVICE", default="auto")  # auto | cpu | cuda
 WHISPER_COMPUTE_TYPE = _env("FC_WHISPER_COMPUTE_TYPE", default="auto")  # auto | int8 | float16 | ...

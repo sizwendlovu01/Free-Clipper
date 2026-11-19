@@ -52,8 +52,8 @@
         <div><label for="template_id">Caption style</label><select id="template_id"></select></div>
         <div><label for="language">Spoken language</label>
           <select id="language">
-            <option value="">Detect automatically</option>
-            <option value="en">English</option><option value="es">Spanish</option><option value="pt">Portuguese</option>
+            <option value="en" selected>English</option>
+            <option value="">Detect automatically</option><option value="es">Spanish</option><option value="pt">Portuguese</option>
             <option value="fr">French</option><option value="de">German</option><option value="it">Italian</option>
             <option value="nl">Dutch</option><option value="ru">Russian</option><option value="uk">Ukrainian</option>
             <option value="pl">Polish</option><option value="tr">Turkish</option><option value="ar">Arabic</option>
@@ -62,7 +62,8 @@
             <option value="zh">Chinese</option><option value="ja">Japanese</option><option value="ko">Korean</option>
             <option value="sw">Swahili</option><option value="zu">Zulu</option><option value="af">Afrikaans</option>
             <option value="yo">Yoruba</option><option value="he">Hebrew</option><option value="fa">Persian</option>
-          </select></div>
+          </select>
+          {% if english_only %}<div class="small muted" style="margin-top:4px">Clips, captions and titles are always in English. Other languages are translated.</div>{% endif %}</div>
         <div><label for="transcript_source">Transcript (links)</label>
           <select id="transcript_source">
             <option value="auto">Platform captions when available (fastest)</option>
@@ -83,7 +84,7 @@
       <div class="row" style="margin-top:14px">
         <label class="check"><input id="captions" type="checkbox" checked> Burn in captions</label>
         <label class="check"><input id="loudnorm" type="checkbox" checked> Normalize loudness</label>
-        <label class="check"><input id="translate" type="checkbox"> Translate captions to English</label>
+        {% if not english_only %}<label class="check"><input id="translate" type="checkbox"> Translate captions to English</label>{% endif %}
       </div>
       <div class="field" style="margin-top:14px">
         <label for="prompt">Instructions for the AI (optional)</label>
@@ -154,7 +155,7 @@ function showPicked() {
 linkReframe(document.getElementById("reframe"), document.getElementById("aspect"));
 layoutPicker(document.getElementById("reframe"));
 function options() {
-  const v = id => document.getElementById(id).value, c = id => document.getElementById(id).checked;
+  const v = id => document.getElementById(id).value, c = id => !!(document.getElementById(id) || {}).checked;
   return { max_clips: +v("max_clips"), min_len: +v("min_len"), max_len: +v("max_len"), aspect: v("aspect"),
     reframe: reframeValue(document.getElementById("reframe")), template_id: v("template_id"), language: v("language"), whisper_model: v("whisper_model"), transcript_source: v("transcript_source"),
     provider: v("provider"), captions: c("captions"), loudnorm: c("loudnorm"), translate: c("translate"), prompt: v("prompt") };
