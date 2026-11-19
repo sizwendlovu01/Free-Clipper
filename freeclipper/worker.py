@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import config, db, monitor
+from . import config, db, monitor, storage
 from .pipeline import captions, highlights, ingest, media, render, transcribe
 
 log = logging.getLogger("freeclipper.worker")
@@ -73,7 +73,7 @@ def remove_clip_files(job_id: str, clip_id: str) -> int:
     freed = dir_size(cdir) if cdir.exists() else 0
     shutil.rmtree(cdir, ignore_errors=True)
     remove_temp_files([clip_id])
-    return freed
+    return freed + storage.delete(job_id, f"clips/{clip_id}/")
 
 
 def purge_job(job_id: str) -> int:
@@ -85,7 +85,7 @@ def purge_job(job_id: str) -> int:
     freed = dir_size(jdir) if jdir.exists() else 0
     shutil.rmtree(jdir, ignore_errors=True)
     remove_temp_files(clip_ids)
-    return freed
+    return freed + storage.delete(job_id)
 
 
 # Half-finished downloads and working files: useless after a restart, and the first thing to go when the
@@ -113,6 +113,40 @@ def emergency_free_space() -> int:
     log.warning("storage was full: removed %d partial/temporary file(s), %.0f MB freed, %d MB free now",
                 len(targets), freed / 1048576, disk_free_mb())
     return freed
+
+
+def source_available(job_id: str) -> bool:
+    """The project's source video is kept, on the volume or in R2."""
+    return find_source(job_id) is not None or storage.remote_source(job_id) is not None
+
+
+def ensure_local_source(job_id: str) -> Path | None:
+    """The source video on the volume, downloading it back from R2 if that's where it is."""
+    src = find_source(job_id)
+    if src:
+        return src
+    name = storage.remote_source(job_id)
+    if name and storage.fetch(job_id, name, job_dir(job_id) / name):
+        return job_dir(job_id) / name
+    return None
+
+
+def offload_clip(job_id: str, clip_id: str) -> None:
+    """Move a finished clip's video and thumbnail to R2 (no-op when R2 is off or full)."""
+    cdir = job_dir(job_id) / "clips" / clip_id
+    for name in ("clip.mp4", "thumb.jpg"):
+        storage.offload(job_id, cdir / name, f"clips/{clip_id}/{name}")
+
+
+def offload_source(job_id: str) -> None:
+    """Keep the source video in R2 rather than on the volume once a job no longer needs it locally."""
+    src = find_source(job_id)
+    if not src:
+        return
+    if storage.is_remote(job_id, src.name):
+        src.unlink(missing_ok=True)  # R2 already has it (fetched back for a re-render)
+    else:
+        storage.offload(job_id, src, src.name)
 
 
 def template_style(template_id: int | None) -> dict:
@@ -374,7 +408,7 @@ class Runner:
 
         try:
             audio = jdir / "audio.wav"
-            src = find_source(job_id)
+            src = ensure_local_source(job_id)
             title = None
             tpath = jdir / "transcript.json"
             want_model = opts.get("whisper_model") or config.WHISPER_MODEL
@@ -520,7 +554,7 @@ class Runner:
 
             # 4. Make sure the video is here
             if not src:
-                src = find_source(job_id)
+                src = ensure_local_source(job_id)
             if not src:
                 self._wait_video(job_id, video_thread, video, prog, 0.65, 0.70, "Finishing video download")
                 src = video["path"]
@@ -555,6 +589,7 @@ class Runner:
                 notes.append(f"{failures} of {len(clip_rows)} clips failed to render; see their errors below.")
             total = time.monotonic() - started
             log.info("job %s done in %.0fs %s", job_id, total, {k: round(v) for k, v in timings.items()})
+            offload_source(job_id)  # the volume keeps only small files when R2 is on
             monitor.record("info", "project finished",
                            f"{job['title'][:80]}: {len(clip_rows) - failures} clip(s) in {total / 60:.1f} min",
                            job_id=job_id, user_id=job["user_id"])
@@ -579,6 +614,8 @@ class Runner:
             if video_thread and video_thread.is_alive():
                 self._cancel.add(job_id)  # stop the download if the job ended early
                 video_thread.join(timeout=30)
+            if storage.remote_source(job_id) and find_source(job_id):
+                find_source(job_id).unlink(missing_ok=True)  # R2 has it; don't keep a second copy here
             if not db.one("SELECT id FROM jobs WHERE id = ?", (job_id,)):
                 shutil.rmtree(jdir, ignore_errors=True)  # deleted while running: leave nothing behind
             elif not requeued:  # keep partial downloads when the job will resume after a restart
@@ -630,6 +667,7 @@ class Runner:
             db.execute("UPDATE clips SET status = 'rendering', updated_at = ? WHERE id = ?", (db.now(), c["id"]))
             try:
                 render.render_clip(jdir, src, info, c, transcript, opts, style, b)
+                offload_clip(job_id, c["id"])
             finally:
                 transcribe.trim_memory()  # face tracking frees frames; return them to the OS
                 if not db.one("SELECT id FROM clips WHERE id = ?", (c["id"],)):
@@ -670,7 +708,7 @@ class Runner:
         media.set_job(job["id"])
         try:
             jdir = job_dir(job["id"])
-            src = find_source(job["id"])
+            src = ensure_local_source(job["id"])
             if not src:
                 raise RuntimeError("The source video is no longer stored, so this clip can't be re-rendered.")
             probe_path = jdir / "probe.json"
@@ -685,6 +723,7 @@ class Runner:
                 if not db.one("SELECT id FROM clips WHERE id = ?", (clip_id,)):
                     remove_clip_files(job["id"], clip_id)  # deleted while re-rendering
                     return
+            offload_clip(job["id"], clip_id)
             db.execute("UPDATE clips SET status = 'done', error = NULL, updated_at = ? WHERE id = ?",
                        (db.now(), clip_id))
         except Exception as exc:
@@ -694,6 +733,8 @@ class Runner:
         finally:
             self._rerendering.discard(clip_id)
             media.set_job(None)
+            if not self.is_active(clip["job_id"]):
+                offload_source(clip["job_id"])  # it was only needed for this render
             transcribe.trim_memory()
 
     # ---- housekeeping ----
@@ -728,7 +769,9 @@ class Runner:
             media.kill_job(j["id"])  # a re-render in progress
             freed += purge_job(j["id"])
             projects += 1
-        # Unfinished uploads, anything left on disk without a project, and all temp files.
+        # R2 files whose project is gone, unfinished uploads, anything left on disk, and all temp files.
+        for r in db.query("SELECT DISTINCT job_id FROM remote_files"):
+            freed += storage.delete(r["job_id"])
         db.execute("DELETE FROM uploads")
         for d in list(config.UPLOADS_DIR.iterdir()) + list(config.JOBS_DIR.iterdir()):
             freed += dir_size(d) if d.is_dir() else 0
@@ -865,6 +908,8 @@ class Runner:
                     src = find_source(d.name)
                     if src:
                         src.unlink(missing_ok=True)
+                        stats["sources"] += 1
+                    if storage.delete(d.name, "source."):
                         stats["sources"] += 1
         stats["disk_free_mb"] = disk_free_mb()
         if stats["disk_free_mb"] < min_free_mb():

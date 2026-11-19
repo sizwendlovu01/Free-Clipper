@@ -23,10 +23,11 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import ClientDisconnect
 
-from . import auth, config, db, monitor
+from . import auth, config, db, monitor, storage
 from .pipeline import ingest, media
 from .pipeline.render import ASPECTS
-from .worker import Runner, emergency_free_space, find_source, job_dir, purge_job, remove_clip_files
+from .worker import (Runner, emergency_free_space, find_source, job_dir, purge_job, remove_clip_files,
+                     source_available)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("freeclipper")
@@ -237,7 +238,7 @@ def job_json(j: dict, with_clips: bool = False) -> dict:
     thumb = db.one("SELECT id FROM clips WHERE job_id = ? AND status = 'done' ORDER BY score DESC LIMIT 1",
                    (j["id"],))
     out["thumb"] = f"/files/{thumb['id']}/thumb.jpg" if thumb else None
-    out["source_available"] = find_source(j["id"]) is not None
+    out["source_available"] = source_available(j["id"])
     out["expires_at"] = None
     if config.PROJECT_RETENTION_HOURS and j["status"] in ("done", "failed", "cancelled"):
         last = db.one("SELECT MAX(updated_at) AS t FROM clips WHERE job_id = ?", (j["id"],))["t"]
@@ -252,6 +253,7 @@ def job_json(j: dict, with_clips: bool = False) -> dict:
 
 def user_storage_mb(user_id: int) -> int:
     total = sum(r["received"] for r in db.query("SELECT received FROM uploads WHERE user_id = ?", (user_id,)))
+    total += storage.job_bytes([j["id"] for j in db.query("SELECT id FROM jobs WHERE user_id = ?", (user_id,))])
     for j in db.query("SELECT id FROM jobs WHERE user_id = ?", (user_id,)):
         for p in job_dir(j["id"]).rglob("*"):
             try:
@@ -280,6 +282,9 @@ def check_capacity(user: dict, new_job: bool = True) -> None:
         raise HTTPException(503, "The processing queue is full right now. Please try again in a few minutes.")
     if disk_free_mb() < min_free_mb():
         raise HTTPException(507, "The server's storage is nearly full. Please try again later.")
+    if storage.enabled() and storage.used_bytes() >= storage.cap_bytes() * 0.97:
+        raise HTTPException(507, "Clip storage is full for now (free plan limit). Delete old projects, or try "
+                                 "again after older projects expire.")
     if user["is_admin"]:
         return
     u = usage(user)
@@ -715,7 +720,15 @@ def api_admin_stats(admin: dict = Depends(require_admin)):
         "users": users,
         "errors": errors,
         "alerts": {"configured": bool(config.ALERT_WEBHOOK_URL), "cooldown_minutes": config.ALERT_COOLDOWN_MINUTES},
+        "r2": {"enabled": storage.enabled(), "bucket": config.R2_BUCKET, "used_mb": round(storage.used_bytes() / 1048576, 1),
+               "cap_mb": round(storage.cap_bytes() / 1048576)},
     }
+
+
+@app.post("/api/admin/storage-test")
+async def api_admin_storage_test(admin: dict = Depends(require_admin)):
+    """Check the R2 settings: write a tiny file, read it back through a private link, delete it."""
+    return await run_in_threadpool(storage.self_test)
 
 
 @app.post("/api/admin/test-alert")
@@ -1198,7 +1211,7 @@ async def api_job_reanalyze(job_id: str, request: Request, user: dict = Depends(
     await run_in_threadpool(check_capacity, user, False)
     if not user["is_admin"] and not auth.limiter.allow(f"reanalyze:{user['id']}", config.USER_JOBS_PER_DAY, 86400):
         raise HTTPException(429, f"Limit reached ({config.USER_JOBS_PER_DAY} re-runs per 24 hours).")
-    if job["source_type"] == "upload" and find_source(job_id) is None:
+    if job["source_type"] == "upload" and not source_available(job_id):
         raise HTTPException(409, "The source video is no longer stored, so this project can't be processed again.")
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
     merged = {**json.loads(job["options"] or "{}"), **(body.get("options") or {})}
@@ -1241,9 +1254,12 @@ def api_transcript(job_id: str, fmt: str, user: dict = Depends(require_user)):
 def api_source(job_id: str, user: dict = Depends(require_user)):
     own_job(job_id, user)
     src = find_source(job_id)
-    if not src:
-        raise HTTPException(404)
-    return FileResponse(src)
+    if src:
+        return FileResponse(src)
+    name = storage.remote_source(job_id)
+    if name:
+        return RedirectResponse(storage.link(job_id, name), 302)
+    raise HTTPException(404)
 
 
 @app.get("/api/jobs/{job_id}/export.zip")
@@ -1256,6 +1272,7 @@ async def api_export(job_id: str, user: dict = Depends(require_user)):
 
     def build() -> str:
         fd, path = tempfile.mkstemp(suffix=".zip")
+        fetched = Path(tempfile.mkdtemp(prefix="zip-"))
         with zipfile.ZipFile(open(fd, "wb", closefd=True), "w") as zf:
             for f in ("transcript.json", "transcript.srt", "transcript.vtt"):
                 if (jdir / f).exists():
@@ -1265,12 +1282,18 @@ async def api_export(job_id: str, user: dict = Depends(require_user)):
                 folder = f"{rank:02d}-{slug(c['title'])}"
                 cdir = jdir / "clips" / c["id"]
                 for name in CLIP_FILES:
-                    if (cdir / name).exists():
-                        zf.write(cdir / name, f"{folder}/{name}",
+                    local = cdir / name
+                    if not local.exists() and storage.is_remote(job_id, f"clips/{c['id']}/{name}"):
+                        local = fetched / f"{c['id']}-{name}"  # stored in R2: bring it back for the ZIP
+                        if not storage.fetch(job_id, f"clips/{c['id']}/{name}", local):
+                            continue
+                    if local.exists():
+                        zf.write(local, f"{folder}/{name}",
                                  compress_type=zipfile.ZIP_STORED if name.endswith((".mp4", ".jpg"))
                                  else zipfile.ZIP_DEFLATED)
                 index.append({**clip_json(c), "folder": folder})
             zf.writestr("clips.json", json.dumps({"job": job_json(job), "clips": index}, ensure_ascii=False, indent=2))
+        shutil.rmtree(fetched, ignore_errors=True)
         return path
 
     path = await run_in_threadpool(build)
@@ -1292,7 +1315,7 @@ async def api_clip_add(job_id: str, request: Request, user: dict = Depends(requi
     job = own_job(job_id, user)
     if job["status"] not in ("done", "failed") or not (job_dir(job_id) / "transcript.json").exists():
         raise HTTPException(409, "Wait for the job to finish first.")
-    if find_source(job_id) is None:
+    if not source_available(job_id):
         raise HTTPException(409, "The source video is no longer stored, so new clips can't be made.")
     body = await request.json()
     start, end = _bounds(body, job)
@@ -1362,9 +1385,14 @@ def clip_file(clip_id: str, name: str, request: Request, download: int = 0):
         raise HTTPException(404)
     clip, job = own_clip(clip_id, user)
     path = job_dir(job["id"]) / "clips" / clip_id / name
+    filename = f"{slug(clip['title'])}{Path(name).suffix}"
     if not path.exists():
+        if storage.is_remote(job["id"], f"clips/{clip_id}/{name}"):
+            # Stored in R2: send the viewer straight there with a private, short-lived link.
+            return RedirectResponse(storage.link(job["id"], f"clips/{clip_id}/{name}",
+                                                 filename if download else None, CLIP_FILES[name]), 302)
         raise HTTPException(404)
-    kwargs = {"filename": f"{slug(clip['title'])}{Path(name).suffix}"} if download else {}
+    kwargs = {"filename": filename} if download else {}
     return FileResponse(path, media_type=CLIP_FILES[name], headers={"Cache-Control": "private, max-age=60"},
                         **kwargs)
 

@@ -79,7 +79,7 @@ def playable(c: httpx.Client, url: str) -> tuple[bool, str]:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return True, "ffmpeg not found here; skipped full decode"
-    r = c.get(url)
+    r = c.get(url, follow_redirects=True)  # clips in R2 arrive via a private link
     if r.status_code != 200 or len(r.content) < 10_000:
         return False, f"HTTP {r.status_code}, {len(r.content)} bytes"
     with tempfile.TemporaryDirectory() as d:
@@ -115,7 +115,7 @@ def test_deletion(admin: httpx.Client, user: httpx.Client, job: dict, video: Pat
     after = admin.get(f"/api/jobs/{job['id']}").json()
     check("deleted clip removed from the project", all(x["id"] != victim["id"] for x in after["clips"]))
     check("deleted clip's video is gone", admin.get(victim["files"]["video"]).status_code == 404)
-    check("other clips are untouched", all(admin.get(x["files"]["video"]).status_code == 200
+    check("other clips are untouched", all(admin.get(x["files"]["video"], follow_redirects=True).status_code == 200
                                            for x in after["clips"] if x["status"] == "done"))
     if jpath:
         check("deleted clip's files removed from storage", not (jpath / "clips" / victim["id"]).exists())
@@ -146,7 +146,8 @@ def test_deletion(admin: httpx.Client, user: httpx.Client, job: dict, video: Pat
                                                   for x in after["clips"]))
     if jpath:
         check("project folder removed from storage", not jpath.exists())
-        check("storage space reclaimed", abs(freed - size / 1048576) < 1.0, f"{freed} MB freed")
+        # With R2 on, most of a project is in the bucket, so more is freed than the folder held.
+        check("storage space reclaimed", freed >= size / 1048576 - 1.0, f"{freed} MB freed, folder held {size / 1048576:.1f} MB")
 
     # The server keeps working normally after deletions.
     r = upload(admin, video, {**opts, "max_clips": 1})
@@ -163,10 +164,10 @@ def test_exports(c: httpx.Client, job: dict) -> None:
     clip = next((x for x in job["clips"] if x["status"] == "done"), None)
     if not check("at least one clip rendered", clip is not None, f"{len(job['clips'])} clips"):
         return
-    r = c.get(clip["files"]["video"] + "&download=1")
+    r = c.get(clip["files"]["video"] + "&download=1", follow_redirects=True)
     check("MP4 download", r.status_code == 200 and r.content[4:8] == b"ftyp" and len(r.content) > 10_000,
           f"{len(r.content)} bytes")
-    r = c.get(clip["files"]["video"], headers={"Range": "bytes=0-99"})
+    r = c.get(clip["files"]["video"], headers={"Range": "bytes=0-99"}, follow_redirects=True)
     check("MP4 range request (video seeking)", r.status_code == 206 and len(r.content) == 100)
     r = c.get(clip["files"]["srt"])
     check("SRT export", r.status_code == 200 and "-->" in r.text)
@@ -176,7 +177,7 @@ def test_exports(c: httpx.Client, job: dict) -> None:
     check("ASS export", r.status_code == 200 and "[Script Info]" in r.text)
     r = c.get(clip["files"]["meta"])
     check("JSON metadata export", r.status_code == 200 and r.json().get("width") in (720, 1280))
-    r = c.get(clip["files"]["thumb"])
+    r = c.get(clip["files"]["thumb"], follow_redirects=True)
     check("thumbnail", r.status_code == 200 and r.content[:2] == b"\xff\xd8")
     for fmt, marker in (("srt", "-->"), ("vtt", "WEBVTT"), ("txt", ""), ("json", "segments")):
         r = c.get(f"/api/jobs/{job['id']}/transcript.{fmt}")
@@ -310,7 +311,8 @@ def main() -> int:
         clip = job["clips"][0]
         check("other users can't download its clips", user.get(clip["files"]["video"]).status_code == 404)
         r = admin.patch(f"/api/clips/{clip['id']}", json={"rerender": True, "title": "Edited"})
-        check("clip edit queues a re-render", r.status_code == 200 and r.json()["status"] == "queued")
+        # The worker may pick the clip up before the response is built, so "rendering" counts too.
+        check("clip edit queues a re-render", r.status_code == 200 and r.json()["status"] in ("queued", "rendering"))
         end = time.time() + 600
         while time.time() < end:
             c = next(x for x in admin.get(f"/api/jobs/{job['id']}").json()["clips"] if x["id"] == clip["id"])

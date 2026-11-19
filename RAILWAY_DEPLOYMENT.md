@@ -304,3 +304,21 @@ Then rebuild and rerun `tests/e2e_smoke.py` before pushing.
 - [ ] Volume backups scheduled (Daily)
 - [ ] `tests/e2e_smoke.py` passes against the live URL
 - [ ] Usage limit set in Railway workspace settings
+
+## Optional: store clips in Cloudflare R2
+
+R2 storage is far cheaper than the Railway volume and downloads from it are free. With R2 on, finished
+clip videos, thumbnails and source videos live in the bucket; the volume keeps the database, captions and
+transcripts. Viewers play and download clips through private links that expire after a few hours.
+
+1. Cloudflare dashboard > **R2** > enable R2 (free tier: 10 GB storage a month, free downloads).
+2. Create a bucket (for example `clipforge-clips`), location near your Railway region.
+3. **R2 > Manage API tokens > Create API token**: permission **Object Read & Write**, applied to that
+   bucket only. Copy the **Access Key ID** and **Secret Access Key** (the secret is shown once).
+4. Railway > your service > **Variables**: add `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
+   and `R2_BUCKET`, then deploy.
+5. In the app: **Admin > Test R2**. It writes, reads and deletes a small test file.
+
+The app never stores more than `R2_MAX_STORAGE_GB` (default 9) in the bucket, to stay inside the free tier;
+past that, new videos are refused until older projects expire or are deleted. For the Share button to
+fetch clips, the bucket needs a CORS rule allowing `GET`/`HEAD` from your site's address.

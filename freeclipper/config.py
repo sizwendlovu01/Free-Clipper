@@ -216,6 +216,16 @@ TEMP_FILE_MAX_AGE_HOURS = max(1, _int("TEMP_FILE_MAX_AGE_HOURS", default=6))
 # Delete a project's *source* video this many days after processing (0 = keep forever). Rendered clips,
 # captions and transcripts are never deleted by cleanup; without the source, clips can't be re-rendered.
 SOURCE_RETENTION_DAYS = max(0, _int("SOURCE_RETENTION_DAYS", default=0))
+# ---------------- Cloudflare R2 storage (optional) ----------------
+# With all four set, clips, thumbnails and source videos are kept in R2 instead of on the volume.
+R2_ACCOUNT_ID = (_env("R2_ACCOUNT_ID", default="") or "").strip()
+R2_ACCESS_KEY_ID = (_env("R2_ACCESS_KEY_ID", default="") or "").strip()
+R2_SECRET_ACCESS_KEY = (_env("R2_SECRET_ACCESS_KEY", default="") or "").strip()
+R2_BUCKET = (_env("R2_BUCKET", default="") or "").strip()
+R2_ENDPOINT = (_env("R2_ENDPOINT", default="") or "").strip()  # only for testing with another S3 service
+# Never store more than this in R2 (its free allowance is 10 GB a month).
+R2_MAX_STORAGE_GB = max(0.1, _float("R2_MAX_STORAGE_GB", default=9.0))
+
 # ---------------- monitoring ----------------
 # Failures are sent to this webhook (Discord or Slack "incoming webhook" URL). Empty = dashboard only.
 ALERT_WEBHOOK_URL = (_env("ALERT_WEBHOOK_URL", default="") or "").strip()

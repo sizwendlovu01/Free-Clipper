@@ -78,6 +78,13 @@ CREATE TABLE IF NOT EXISTS uploads (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS uploads_user ON uploads(user_id, updated_at);
+CREATE TABLE IF NOT EXISTS remote_files (
+    key TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS remote_files_job ON remote_files(job_id);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     level TEXT NOT NULL,
