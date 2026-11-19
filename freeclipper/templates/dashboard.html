@@ -39,6 +39,12 @@
         <div><label for="reframe">Reframing</label>
           <select id="reframe">
             <option value="auto">Follow faces (auto)</option>
+            <optgroup label="Streamer clips (gameplay + webcam box)">
+              <option value="streamer@9:16">Streamer · vertical 9:16 · webcam top-left</option>
+              <option value="streamer_bottom@9:16">Streamer · vertical 9:16 · webcam bottom-left</option>
+              <option value="streamer@1:1">Streamer · square 1:1 · webcam top-left</option>
+              <option value="streamer_bottom@1:1">Streamer · square 1:1 · webcam bottom-left</option>
+            </optgroup>
             <option value="center">Center crop</option>
             <option value="fit_blur">Fit with blurred background</option>
             <option value="fit_black">Fit with black bars</option>
@@ -145,10 +151,11 @@ function showPicked() {
       `${sys.usage.storage_mb}/${sys.limits.user_max_storage_mb} MB storage.` : "");
 })();
 
+linkReframe(document.getElementById("reframe"), document.getElementById("aspect"));
 function options() {
   const v = id => document.getElementById(id).value, c = id => document.getElementById(id).checked;
   return { max_clips: +v("max_clips"), min_len: +v("min_len"), max_len: +v("max_len"), aspect: v("aspect"),
-    reframe: v("reframe"), template_id: v("template_id"), language: v("language"), whisper_model: v("whisper_model"), transcript_source: v("transcript_source"),
+    reframe: reframeValue(document.getElementById("reframe")), template_id: v("template_id"), language: v("language"), whisper_model: v("whisper_model"), transcript_source: v("transcript_source"),
     provider: v("provider"), captions: c("captions"), loudnorm: c("loudnorm"), translate: c("translate"), prompt: v("prompt") };
 }
 

@@ -200,3 +200,23 @@ function sharePanel(c) {
   m.querySelector("#sharecopy").onclick = () => copyText(postText(c));
   m.querySelector("#shareclose").onclick = () => m.remove();
 }
+
+// Reframing menus list each streamer layout once per format ("streamer@9:16", "streamer@1:1"): picking one
+// also sets the Format menu, and changing the format switches to the matching streamer entry.
+function reframeValue(sel) { return sel.value.split("@")[0]; }
+function setReframe(sel, reframe, aspect) {
+  const opts = [...sel.options];
+  const pick = opts.find(o => o.value === `${reframe}@${aspect}`) || opts.find(o => o.value === reframe)
+    || opts.find(o => o.value.startsWith(reframe + "@"));
+  if (pick) sel.value = pick.value;
+}
+function linkReframe(reframeSel, aspectSel) {
+  reframeSel.addEventListener("change", () => {
+    const aspect = reframeSel.value.split("@")[1];
+    if (aspect) { aspectSel.value = aspect; aspectSel.dataset.touched = 1; }
+  });
+  aspectSel.addEventListener("change", () => {
+    const [mode, current] = reframeSel.value.split("@");
+    if (current && current !== aspectSel.value) setReframe(reframeSel, mode, aspectSel.value);
+  });
+}

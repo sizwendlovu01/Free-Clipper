@@ -43,7 +43,14 @@
         <option value="9:16">9:16</option><option value="1:1">1:1</option><option value="4:5">4:5</option>
         <option value="16:9">16:9</option><option value="original">Original</option></select></div>
       <div><label for="rreframe">Reframing</label><select id="rreframe">
-        <option value="auto">Follow faces</option><option value="center">Center crop</option>
+        <option value="auto">Follow faces</option>
+        <optgroup label="Streamer clips (gameplay + webcam box)">
+          <option value="streamer@9:16">Streamer · vertical 9:16 · webcam top-left</option>
+          <option value="streamer_bottom@9:16">Streamer · vertical 9:16 · webcam bottom-left</option>
+          <option value="streamer@1:1">Streamer · square 1:1 · webcam top-left</option>
+          <option value="streamer_bottom@1:1">Streamer · square 1:1 · webcam bottom-left</option>
+        </optgroup>
+        <option value="center">Center crop</option>
         <option value="fit_blur">Blurred background</option><option value="fit_black">Black bars</option></select></div>
       <div><label for="rtpl">Caption style</label><select id="rtpl"></select></div>
     </div>
@@ -100,7 +107,9 @@ function render() {
 
   for (const [id, key] of [["rn", "max_clips"], ["rmin", "min_len"], ["rmax", "max_len"], ["raspect", "aspect"], ["rreframe", "reframe"], ["rprompt", "prompt"]]) {
     const el = document.getElementById(id);
-    if (document.activeElement !== el && !el.dataset.touched) el.value = o[key] ?? "";
+    if (document.activeElement !== el && !el.dataset.touched) {
+      if (id === "rreframe") setReframe(el, o.reframe || "auto", o.aspect); else el.value = o[key] ?? "";
+    }
   }
   const ratio = ASPECT_CSS[o.aspect] || "9/16";
   const el = document.getElementById("clips");
@@ -234,12 +243,13 @@ document.getElementById("addclip").onclick = e => withBusy(e.currentTarget, asyn
   ["cs", "ce", "ct"].forEach(id => document.getElementById(id).value = "");
   load();
 }, "Adding…");
+linkReframe(document.getElementById("rreframe"), document.getElementById("raspect"));
 document.querySelectorAll("#rn,#rmin,#rmax,#raspect,#rreframe,#rprompt").forEach(el => el.addEventListener("input", () => el.dataset.touched = 1));
 document.getElementById("reanalyze").onclick = e => {
   if (job.clips.length && !confirm("This replaces the current clips. Continue?")) return;
   const v = id => document.getElementById(id).value;
   const options = { max_clips: +v("rn"), min_len: +v("rmin"), max_len: +v("rmax"), aspect: v("raspect"),
-    reframe: v("rreframe"), prompt: v("rprompt"), template_id: v("rtpl") };
+    reframe: reframeValue(document.getElementById("rreframe")), prompt: v("rprompt"), template_id: v("rtpl") };
   withBusy(e.currentTarget, async () => {
     await api(`/api/jobs/${JOB}/reanalyze`, { method: "POST", body: { options } });
     toast("Finding clips again…");
