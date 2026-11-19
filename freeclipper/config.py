@@ -224,7 +224,7 @@ R2_SECRET_ACCESS_KEY = (_env("R2_SECRET_ACCESS_KEY", default="") or "").strip()
 R2_BUCKET = (_env("R2_BUCKET", default="") or "").strip()
 R2_ENDPOINT = (_env("R2_ENDPOINT", default="") or "").strip()  # only for testing with another S3 service
 # Never store more than this in R2 (its free allowance is 10 GB a month).
-R2_MAX_STORAGE_GB = max(0.1, _float("R2_MAX_STORAGE_GB", default=9.0))
+R2_MAX_STORAGE_GB = max(0.001, _float("R2_MAX_STORAGE_GB", default=9.0))
 
 # ---------------- monitoring ----------------
 # Failures are sent to this webhook (Discord or Slack "incoming webhook" URL). Empty = dashboard only.

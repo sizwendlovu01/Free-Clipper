@@ -4,6 +4,7 @@
   <h1 style="margin:0">Admin</h1><span class="spacer"></span>
   <span class="small muted" id="updated"></span>
   <button class="sm" id="r2test">Test R2</button>
+  <button class="sm" id="r2verify">Count R2 now</button>
   <button class="sm" id="refresh">Refresh</button>
 </div>
 
@@ -64,7 +65,8 @@ function drawKpis(k, r2) {
     tile("Errors (24 h)", k.errors_24h, k.errors_24h ? "see the list below" : "all quiet", k.errors_24h ? "bad" : "good"),
     tile("Storage", fmtMB(k.storage_used_mb), `${fmtMB(k.disk_free_mb)} free of ${fmtMB(k.disk_total_mb)} (${usedPct}% used)`, usedPct >= 85 ? "warn" : ""),
     r2 && r2.enabled
-      ? tile("Cloudflare R2", fmtMB(r2.used_mb), `of ${fmtMB(r2.cap_mb)} free-tier cap (${Math.round(100 * r2.used_mb / r2.cap_mb)}%) · bucket ${esc(r2.bucket)}`,
+      ? tile("Cloudflare R2", fmtMB(r2.used_mb), `of ${fmtMB(r2.cap_mb)} free-tier cap (${Math.round(100 * r2.used_mb / r2.cap_mb)}%) · bucket ${esc(r2.bucket)}`
+             + (r2.verified ? ` · bucket counted ${ago(r2.verified.checked_at)}: ${fmtMB(r2.verified.bytes / 1048576)}` : " · not counted yet"),
              r2.used_mb >= r2.cap_mb * 0.85 ? "warn" : "good")
       : tile("Cloudflare R2", "Off", "clips are kept on the server volume"),
   ].join("");
@@ -134,6 +136,11 @@ async function load() {
   } catch (e) { toast("Couldn't load the dashboard", true); }
 }
 $("refresh").onclick = e => withBusy(e.currentTarget, load, "Refreshing…");
+$("r2verify").onclick = e => withBusy(e.currentTarget, async () => {
+  const r = await api("/api/admin/storage-verify", { method: "POST" });
+  toast(`R2 holds ${fmtMB(r.bytes / 1048576)} of ${fmtMB(r.cap_bytes / 1048576)}`
+        + (r.strays_removed ? `; removed ${r.strays_removed} stray file(s)` : "")); load();
+}, "Counting…");
 $("r2test").onclick = e => withBusy(e.currentTarget, async () => {
   const r = await api("/api/admin/storage-test", { method: "POST" });
   if (r.ok) toast(`R2 works: wrote, read and deleted a test file in ${r.ms} ms (bucket ${r.bucket})`);

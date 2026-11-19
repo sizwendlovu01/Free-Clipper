@@ -869,6 +869,13 @@ class Runner:
         self._expire_projects(stats)
         self._expire_uploads(stats)
         self._recover_abandoned(stats)
+        if storage.enabled():
+            try:  # third free-tier guard: count what the bucket really holds
+                r2 = storage.verify()
+                stats["r2_mb"] = round(r2["bytes"] / 1048576, 1)
+                stats["r2_strays_removed"] = r2["strays_removed"]
+            except Exception as exc:
+                log.error("R2 usage check failed: %s", exc)
         cutoff = time.time() - config.TEMP_FILE_MAX_AGE_HOURS * 3600
         for p in sorted(config.TEMP_DIR.rglob("*"), key=lambda x: len(x.parts), reverse=True):
             try:

@@ -721,7 +721,8 @@ def api_admin_stats(admin: dict = Depends(require_admin)):
         "errors": errors,
         "alerts": {"configured": bool(config.ALERT_WEBHOOK_URL), "cooldown_minutes": config.ALERT_COOLDOWN_MINUTES},
         "r2": {"enabled": storage.enabled(), "bucket": config.R2_BUCKET, "used_mb": round(storage.used_bytes() / 1048576, 1),
-               "cap_mb": round(storage.cap_bytes() / 1048576)},
+               "cap_mb": round(storage.cap_bytes() / 1048576),
+               "verified": db.get_setting("r2_measured", None)},
     }
 
 
@@ -729,6 +730,14 @@ def api_admin_stats(admin: dict = Depends(require_admin)):
 async def api_admin_storage_test(admin: dict = Depends(require_admin)):
     """Check the R2 settings: write a tiny file, read it back through a private link, delete it."""
     return await run_in_threadpool(storage.self_test)
+
+
+@app.post("/api/admin/storage-verify")
+async def api_admin_storage_verify(admin: dict = Depends(require_admin)):
+    """Count what the R2 bucket really holds now (also runs automatically with every cleanup)."""
+    if not storage.enabled():
+        raise HTTPException(400, "R2 is not configured.")
+    return await run_in_threadpool(storage.verify)
 
 
 @app.post("/api/admin/test-alert")

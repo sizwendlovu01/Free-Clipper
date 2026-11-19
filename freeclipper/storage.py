@@ -55,8 +55,17 @@ def cap_bytes() -> int:
     return int(config.R2_MAX_STORAGE_GB * 1024 ** 3)
 
 
-def used_bytes() -> int:
+def tracked_bytes() -> int:
+    """What the app's own records say is stored."""
     return int(db.one("SELECT COALESCE(SUM(size), 0) AS n FROM remote_files")["n"])
+
+
+def used_bytes() -> int:
+    """Usage for every cap decision: the app's records plus anything the last real count of the bucket
+    (verify()) found that the records don't cover. Deletions count straight away; unknown files are never
+    ignored."""
+    measured = db.get_setting("r2_measured", {}) or {}
+    return tracked_bytes() + int(measured.get("unrecorded_bytes", 0))
 
 
 def job_bytes(job_ids: list[str]) -> int:
@@ -142,6 +151,63 @@ def delete(job_id: str, rel_prefix: str = "") -> int:
         except Exception as exc:  # keep the record so a later cleanup retries it
             log.error("R2 delete failed for %s: %s", r["key"], exc)
     return freed
+
+
+def verify(stray_age_hours: float = 1.0) -> dict:
+    """Third free-tier guard: count what the bucket really holds and fix any differences.
+
+    Lists every object (a few requests per run), removes stray objects that no project owns (older than an
+    hour, so in-flight uploads are safe), forgets records whose object is gone, and stores the real total,
+    which used_bytes() then respects. Runs with each cleanup and from Admin."""
+    from datetime import datetime, timedelta, timezone
+
+    if not enabled():
+        return {"enabled": False}
+    known = {r["key"]: r["size"] for r in db.query("SELECT key, size FROM remote_files")}
+    seen, actual, removed_bytes, removed, unrecorded = set(), 0, 0, 0, 0
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=stray_age_hours)
+    token = None
+    while True:
+        kwargs = {"Bucket": config.R2_BUCKET, "MaxKeys": 1000}
+        if token:
+            kwargs["ContinuationToken"] = token
+        page = client().list_objects_v2(**kwargs)
+        for obj in page.get("Contents", []) or []:
+            k, size = obj["Key"], int(obj["Size"])
+            if k in known:
+                seen.add(k)
+                actual += size
+                if size != known[k]:  # keep the record honest
+                    db.execute("UPDATE remote_files SET size = ? WHERE key = ?", (size, k))
+            elif obj["LastModified"] < cutoff:
+                client().delete_object(Bucket=config.R2_BUCKET, Key=k)  # stray: nothing in the app uses it
+                removed += 1
+                removed_bytes += size
+            else:
+                actual += size  # brand new and not yet recorded: count it to be safe
+                unrecorded += size
+        if not page.get("IsTruncated"):
+            break
+        token = page.get("NextContinuationToken")
+    missing = [k for k in known if k not in seen]
+    for k in missing:  # recorded but not in the bucket (e.g. deleted by hand)
+        db.execute("DELETE FROM remote_files WHERE key = ?", (k,))
+    result = {"enabled": True, "bytes": actual, "unrecorded_bytes": unrecorded, "checked_at": db.now(),
+              "strays_removed": removed,
+              "strays_bytes": removed_bytes, "missing_records": len(missing), "cap_bytes": cap_bytes()}
+    db.set_setting("r2_measured", result)
+    pct = 100 * actual / cap_bytes()
+    from . import monitor
+    if pct >= 95:
+        monitor.record("error", "storage", f"R2 is {pct:.0f}% of the {config.R2_MAX_STORAGE_GB:g} GB free-tier cap "
+                       f"({actual / 1024 ** 3:.2f} GB). New videos are refused until space frees up.")
+    elif pct >= 80:
+        monitor.record("error", "storage", f"R2 is {pct:.0f}% of the {config.R2_MAX_STORAGE_GB:g} GB free-tier cap "
+                       f"({actual / 1024 ** 3:.2f} GB).")
+    if removed or missing:
+        log.warning("R2 check: removed %d stray object(s) (%.1f MB), dropped %d stale record(s)",
+                    removed, removed_bytes / 1048576, len(missing))
+    return result
 
 
 def self_test() -> dict:
