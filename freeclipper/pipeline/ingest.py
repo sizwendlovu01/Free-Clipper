@@ -6,6 +6,7 @@ while the full video keeps downloading in the background.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import shutil
 import socket
 import uuid
@@ -15,6 +16,8 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from .. import config
+
+log = logging.getLogger("freeclipper.ingest")
 
 
 def _is_public_host(host: str) -> bool:
@@ -156,16 +159,67 @@ def size_aware_format(budget_mb: int) -> str:
     return "/".join(known + ["bv*[height<=360]+ba", "b[height<=360]", "worst"])
 
 
+def _estimated_bytes(f: dict, duration: float | None) -> float | None:
+    """A format's size: as reported, or estimated from its bitrate and the video's length (sites such
+    as Twitch report bitrates but not sizes)."""
+    size = f.get("filesize") or f.get("filesize_approx")
+    if size:
+        return float(size)
+    tbr = f.get("tbr") or ((f.get("vbr") or 0) + (f.get("abr") or 0))
+    if tbr and duration:
+        return tbr * 1000 / 8 * duration * 1.05  # +5% for container overhead
+    return None
+
+
+def pick_format(info: dict, budget_mb: int) -> str | None:
+    """The highest-quality format (up to 1080p) whose real or estimated size fits the budget, as a
+    yt-dlp format id ("137+140" for separate video and audio). None if no size can be judged."""
+    duration = info.get("duration")
+    formats = info.get("formats") or []
+    has = lambda f, k: f.get(k) not in (None, "none")  # noqa: E731
+    videos = [f for f in formats if has(f, "vcodec") and 0 < (f.get("height") or 0) <= 1080]
+    audios = [f for f in formats if not has(f, "vcodec") and has(f, "acodec")]
+    # Best audio; the normal track over YouTube's volume-compressed "drc" variant of the same quality.
+    audio = max(audios, key=lambda f: (f.get("abr") or f.get("tbr") or 0, "drc" not in str(f.get("format_id"))),
+                default=None)
+    audio_bytes = _estimated_bytes(audio, duration) if audio else None
+    limit = budget_mb * 1024 * 1024 * 0.92
+    fits = []
+    for v in videos:
+        size = _estimated_bytes(v, duration)
+        if size is None:
+            continue
+        if has(v, "acodec"):
+            total, fid = size, v["format_id"]
+        elif audio is not None and audio_bytes is not None:
+            total, fid = size + audio_bytes, f"{v['format_id']}+{audio['format_id']}"
+        else:
+            continue
+        if total <= limit:
+            # Best height first; at the same height prefer 30 fps (half the work to render) and smaller files.
+            fits.append(((v["height"], -(v.get("fps") or 30) if (v.get("fps") or 0) > 30 else 0, -total), fid))
+    return max(fits)[1] if fits else None
+
+
 def download(url: str, dest_dir: Path, progress: Callable[[float], None],
              should_stop: Callable[[], bool], reserve_mb: int = 0) -> tuple[Path, str]:
     """Full video with audio, merged to MP4, at the best quality (up to 1080p) that leaves `reserve_mb`
     of storage free for the rendered clips."""
+    import yt_dlp
+
     budget = download_limit_mb() - reserve_mb
     if budget < 30:
         raise RuntimeError("The server's storage is too full to download this video. Delete old projects, "
                            "or ask the admin to enlarge the storage volume.")
+    fmt = None
+    try:  # choose by real or estimated size first; fall back to yt-dlp's own filters
+        with _access_opts() as access, yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True,
+                                                         "skip_download": True, **access}) as ydl:
+            fmt = pick_format(ydl.extract_info(url, download=False), budget)
+    except Exception as exc:
+        log.info("format pre-check failed (%s); using size filters", type(exc).__name__)
     opts = _base_opts(progress, should_stop) | {
-        "format": size_aware_format(budget),
+        "format": fmt or size_aware_format(budget),
         "merge_output_format": "mp4",
         "outtmpl": str(dest_dir / "source.%(ext)s"),
         "max_filesize": budget * 1024 * 1024,

@@ -99,6 +99,29 @@ def _score(sentence: str, position: float, english: bool) -> float:
     return score
 
 
+# Words that get posts hidden or age-restricted: never a hashtag, and masked in titles.
+PROFANITY = {"fuck", "fucking", "fucked", "fucker", "fucks", "motherfucker", "shit", "shitty", "bullshit", "bitch",
+             "bitches", "ass", "asshole", "dick", "pussy", "cunt", "bastard", "damn", "goddamn", "crap", "piss",
+             "pissed", "slut", "whore", "nigga", "nigger", "fag", "faggot", "retard", "retarded", "cock", "wanker"}
+
+
+# Never hashtags either: platforms limit the reach of posts tagged with drugs, weapons or sex.
+RISKY_TAGS = {"coke", "crack", "cocaine", "meth", "weed", "drugs", "drug", "heroin", "kill", "killed", "killing",
+              "murder", "gun", "guns", "shoot", "shooting", "sex", "sexy", "nude", "naked", "porn", "suicide", "blood"}
+
+
+def _mask(word: str) -> str:
+    """f*cking: still readable, but not a flagged word."""
+    for k, ch in enumerate(word):
+        if ch.lower() in "aeiou" and 0 < k < len(word) - 1:
+            return word[:k] + "*" + word[k + 1:]
+    return word[0] + "*" * (len(word) - 1)
+
+
+def _clean_profanity(text: str) -> str:
+    return re.sub(r"[A-Za-z]+", lambda m: _mask(m.group(0)) if m.group(0).lower() in PROFANITY else m.group(0), text)
+
+
 SMALL_WORDS = {"a", "an", "the", "and", "but", "or", "nor", "for", "so", "yet", "as", "at", "by", "in", "of",
                "off", "on", "per", "to", "up", "via", "vs", "with", "from", "into", "than"}
 # Curiosity leads for a line with no built-in hook (no question, number, "you" or power word).
@@ -166,6 +189,7 @@ def viral_title(text: str, language: str | None = None, index: int = 0) -> str:
         best = _emphasize(_title_case(best))
     else:
         best = best[0].upper() + best[1:]
+    best = _clean_profanity(best)
     if question:
         return best
     quoted = f"“{best}”"
@@ -182,6 +206,14 @@ today tomorrow yesterday later early before after always minute minutes hour hou
 literally honestly seriously totally completely exactly pretty quite""".split())
 
 
+# Common words that say nothing about the topic.
+WEAK_TOPICS = set("""sometimes saying says said tell telling told dude bro guys yeah okay alright gonna wanna
+gotta theyve youre theyre were dont doesnt didnt cant wont isnt arent wasnt shouldnt wouldnt couldnt ive youve
+weve thats whats heres theres lets nothing anything everything somebody someone thing things stuff kinda sorta
+basically literally maybe probably actually really pretty little lots whole else around still again
+""".split())
+
+
 def _stem(w: str) -> str:
     for suf in ("ing", "ed", "es", "s"):
         if w.endswith(suf) and len(w) - len(suf) >= 4:
@@ -190,8 +222,9 @@ def _stem(w: str) -> str:
 
 
 def _topic_words(words: list[str], english: bool) -> list[str]:
-    return [w for w in words if len(w) >= 4 and not (english and (
-        w in STOPWORDS or w in NOT_TOPICS or (w.endswith(("ed", "ly")) and w not in TOPIC_POWER)))]
+    return [w for w in words if len(w) >= 4 and w not in PROFANITY and w not in RISKY_TAGS and "'" not in w and "’" not in w
+            and not (english and (w in STOPWORDS or w in NOT_TOPICS or w in WEAK_TOPICS
+                                  or (w.endswith(("ed", "ly")) and w not in TOPIC_POWER)))]
 
 
 def hashtags(text: str, corpus: Counter | None = None, language: str | None = None, limit: int = 3) -> list[str]:
