@@ -198,9 +198,11 @@ def pick_format(info: dict, budget_mb: int) -> str | None:
     has = lambda f, k: f.get(k) not in (None, "none")  # noqa: E731
     videos = [f for f in formats if has(f, "vcodec") and 0 < (f.get("height") or 0) <= 1080]
     audios = [f for f in formats if not has(f, "vcodec") and has(f, "acodec")]
-    # Best audio; the normal track over YouTube's volume-compressed "drc" variant of the same quality.
-    audio = max(audios, key=lambda f: (f.get("abr") or f.get("tbr") or 0, "drc" not in str(f.get("format_id"))),
-                default=None)
+    # Best audio of the ORIGINAL language: YouTube adds auto-dubbed tracks (Bangla, Hindi, Spanish...) of the
+    # same quality, marked with a lower language_preference than the original. Then the normal track over the
+    # volume-compressed "drc" variant.
+    audio = max(audios, key=lambda f: (f.get("language_preference") or 0, f.get("abr") or f.get("tbr") or 0,
+                                       "drc" not in str(f.get("format_id"))), default=None)
     audio_bytes = _estimated_bytes(audio, duration) if audio else None
     limit = budget_mb * 1024 * 1024 * 0.92
     fits, judged = [], 0
@@ -264,6 +266,32 @@ def download(url: str, dest_dir: Path, progress: Callable[[float], None],
     return _run(url, opts, dest_dir, "source")
 
 
+def original_language(info: dict) -> str | None:
+    """The language actually spoken in the video: the audio track YouTube marks as original (dubbed
+    tracks rank lower), else the video's stated language."""
+    tracks = [f for f in info.get("formats") or [] if f.get("language") and f.get("acodec") not in (None, "none")]
+    if tracks:
+        best = max(tracks, key=lambda f: f.get("language_preference") or 0)
+        if (best.get("language_preference") or 0) > 0:
+            return best["language"]
+    return info.get("language")
+
+
+def _orig_caption_key(info: dict, lang: str | None) -> str | None:
+    """The "<lang>-orig" auto-caption track for the spoken language. Dubbed videos list one per dub."""
+    keys = [k for k in (info.get("automatic_captions") or {}) if k.endswith("-orig")]
+    if lang:
+        base = lang.split("-")[0].lower()
+        for k in keys:
+            if k[: -len("-orig")].lower() == lang.lower():
+                return k
+        for k in keys:
+            if k[: -len("-orig")].split("-")[0].lower() == base:
+                return k
+        return None
+    return keys[0] if len(keys) == 1 else None  # unknown language and several tracks: don't guess
+
+
 def download_captions(url: str, dest_dir: Path, should_stop: Callable[[], bool]) -> tuple[Path | None, dict]:
     """Fetch the platform's original-language speech-recognition captions (YouTube "<lang>-orig"
     track, json3 format with per-word timing). Seconds instead of a local transcription pass.
@@ -273,13 +301,18 @@ def download_captions(url: str, dest_dir: Path, should_stop: Callable[[], bool])
     opts = _base_opts(lambda _p: None, should_stop) | {
         "skip_download": True,
         "writeautomaticsub": True,
-        "subtitleslangs": [r".*-orig"],
         "subtitlesformat": "json3",
         "outtmpl": str(dest_dir / "captions.%(ext)s"),
     }
     with _access_opts() as access, yt_dlp.YoutubeDL({**opts, **access}) as ydl:
-        info = ydl.extract_info(url, download=True)
-    meta = {"title": info.get("title"), "duration": info.get("duration"), "language": info.get("language")}
+        raw = ydl.extract_info(url, download=False, process=False)
+        spoken = original_language(raw)
+        key = _orig_caption_key(raw, spoken)
+        ydl.params["subtitleslangs"] = [key] if key else []
+        ydl.params["writeautomaticsub"] = bool(key)
+        info = ydl.process_ie_result(raw, download=True)
+    meta = {"title": info.get("title"), "duration": info.get("duration"),
+            "language": (spoken or "").split("-")[0] or info.get("language")}
     for lang, sub in (info.get("requested_subtitles") or {}).items():
         path = Path(sub.get("filepath") or "")
         if lang.endswith("-orig") and path.suffix == ".json3" and path.exists():
