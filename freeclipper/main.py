@@ -1571,6 +1571,14 @@ def api_post_retry(post_id: int, user: dict = Depends(require_user)):
     return social.post_json(db.one("SELECT * FROM posts WHERE id = ?", (post_id,)))
 
 
+@app.api_route("/tiktok{code}.txt", methods=["GET", "HEAD"])
+def tiktok_site_verification(code: str):
+    """TikTok's proof that this site is ours (URL properties > URL prefix > signature file)."""
+    if code not in config.TIKTOK_SITE_VERIFICATION:
+        raise HTTPException(404)
+    return Response(f"tiktok-developers-site-verification={code}", media_type="text/plain")
+
+
 @app.api_route("/media/{token}/clip.mp4", methods=["GET", "HEAD"])
 def public_media(token: str):
     """A signed, short-lived public link to one clip, for platforms that download the video themselves

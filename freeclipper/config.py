@@ -239,6 +239,10 @@ PUBLIC_DOMAIN = PUBLIC_DOMAIN.replace("https://", "").replace("http://", "")
 # keys are missing simply doesn't show a Connect button.
 TIKTOK_CLIENT_KEY = (_env("TIKTOK_CLIENT_KEY", default="") or "").strip()
 TIKTOK_CLIENT_SECRET = (_env("TIKTOK_CLIENT_SECRET", default="") or "").strip()
+# TikTok checks you own the site by fetching /tiktok<code>.txt. Put the code(s) TikTok gives you under
+# URL properties here (the part after "tiktok-developers-site-verification="), separated by commas.
+TIKTOK_SITE_VERIFICATION = [c.strip() for c in (_env("TIKTOK_SITE_VERIFICATION", default="") or "").split(",")
+                            if c.strip()]
 # Until TikTok approves the app (its "audit"), every TikTok post is private ("Only me"). Set to true after.
 TIKTOK_AUDITED = _bool("TIKTOK_AUDITED", default=False)
 INSTAGRAM_APP_ID = (_env("INSTAGRAM_APP_ID", default="") or "").strip()

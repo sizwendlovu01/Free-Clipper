@@ -345,7 +345,9 @@ and terms of service links.
 **TikTok** ([developers.tiktok.com/apps](https://developers.tiktok.com/apps)): create an app, add **Login Kit**
 and **Content Posting API** (turn on Direct Post), request the scopes `user.info.basic` and `video.publish`,
 and add the redirect URL. Put the **Client key** and **Client secret** in `TIKTOK_CLIENT_KEY` and
-`TIKTOK_CLIENT_SECRET`. Until TikTok audits the app, every post is private ("Only me"), at most 5 accounts
+`TIKTOK_CLIENT_SECRET`. TikTok also asks you to verify the site (**URL properties > URL prefix**, signature
+file): put the code from the file it gives you (the part after `tiktok-developers-site-verification=`) in
+`TIKTOK_SITE_VERIFICATION`, redeploy, then press Verify. The app serves the file for you. Until TikTok audits the app, every post is private ("Only me"), at most 5 accounts
 can post through the app per day, and the TikTok account must be set to private. The posting screen
 already follows TikTok's posting rules for the audit. After TikTok approves the app, set
 `TIKTOK_AUDITED=true`.
@@ -369,6 +371,7 @@ screen to lift that.
 | Variable | Default | Meaning |
 |---|---|---|
 | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` | (empty) | TikTok developer app keys. Empty = no TikTok. |
+| `TIKTOK_SITE_VERIFICATION` | (empty) | Code(s) from TikTok's URL properties signature file, comma-separated. |
 | `TIKTOK_AUDITED` | false | Set to true once TikTok has approved the app (allows public posts). |
 | `INSTAGRAM_APP_ID`, `INSTAGRAM_APP_SECRET` | (empty) | Instagram app keys (Instagram API with Instagram Login). |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | (empty) | Google OAuth client for YouTube uploads. |
