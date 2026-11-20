@@ -67,6 +67,9 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .drop { border: 2px dashed var(--line); border-radius: var(--radius); padding: 34px; text-align: center;
   color: var(--muted); cursor: pointer; transition: border-color .15s; }
 .drop.over, .drop:hover { border-color: var(--accent); color: var(--text); }
+.drop.ready { border-style: solid; border-color: var(--accent); color: var(--text); cursor: default; }
+.drop.attention { border-color: var(--accent); animation: drop-pulse 1.4s ease-in-out 4; }
+@keyframes drop-pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 35%, transparent); } }
 
 .badge { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 12px; font-weight: 600;
   background: var(--panel-2); border: 1px solid var(--line); }

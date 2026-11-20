@@ -11,8 +11,8 @@
     <div id="tab-upload">
       <input id="file" type="file" accept="video/*,audio/*" class="hidden">
       <div class="drop" id="drop" role="button" tabindex="0" aria-label="Choose a video or audio file">
-        <strong>Drop a video or audio file here</strong><br>
-        <span class="small">or click to choose: videos up to {{ video_limit }}, files up to {{ upload_limit }}</span>
+        <strong class="drop-title">Drop a video or audio file here</strong><br>
+        <span class="small drop-sub">or click to choose: videos up to {{ video_limit }}, files up to {{ upload_limit }}</span>
         {% if retention_text %}<div class="small muted" style="margin-top:6px">Projects are temporary: each one is deleted permanently {{ retention_text }} after it finishes. Download your clips before then.</div>{% endif %}
         <div id="picked" class="small" style="margin-top:8px;color:var(--text)"></div>
       </div>
@@ -107,11 +107,19 @@
 {% block scripts %}
 <script>
 let mode = "upload";
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll("[data-tab]").forEach(x => x.classList.toggle("active", x.dataset.tab === m));
+  document.getElementById("tab-upload").classList.toggle("hidden", m !== "upload");
+  document.getElementById("tab-link").classList.toggle("hidden", m !== "link");
+  const f = document.getElementById("file").files[0];
+  document.getElementById("go").textContent = m === "upload" && f ? "Upload & find clips" : "Find clips";
+}
 document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => {
-  mode = b.dataset.tab;
-  document.querySelectorAll("[data-tab]").forEach(x => x.classList.toggle("active", x === b));
-  document.getElementById("tab-upload").classList.toggle("hidden", mode !== "upload");
-  document.getElementById("tab-link").classList.toggle("hidden", mode !== "link");
+  setMode(b.dataset.tab);
+  // "Upload video" is the button people press to upload: open the file picker straight away.
+  const file = document.getElementById("file");
+  if (b.dataset.tab === "upload" && !file.files.length) file.click();
 }));
 
 // A link (or upload intent) entered on the landing page before signing in.
@@ -121,24 +129,53 @@ try {
   sessionStorage.removeItem("cf_pending_url");
   sessionStorage.removeItem("cf_pending_upload");
   if (pendingUrl) {
-    document.querySelector('[data-tab="link"]').click();
+    setMode("link");
     document.getElementById("url").value = pendingUrl;
     toast("Your link is ready. Pick your settings and click Find clips.");
   } else if (pendingUpload) {
-    toast("Choose a video file to upload.");
+    // Came from "upload a file" on the home page: point straight at the box to tap.
+    const box = document.getElementById("drop");
+    box.classList.add("attention");
+    box.scrollIntoView({ block: "center" });
+    toast("Tap the highlighted box to choose your video.");
   }
 } catch (_) { /* storage unavailable */ }
 
 const fileInput = document.getElementById("file"), drop = document.getElementById("drop");
-drop.addEventListener("click", () => fileInput.click());
-drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); } });
+if (window.matchMedia && matchMedia("(pointer: coarse)").matches) {  // phones and tablets
+  drop.querySelector(".drop-title").textContent = "Tap here to choose a video or audio file";
+  drop.querySelector(".drop-sub").textContent = "From your gallery or files: videos up to {{ video_limit }}, files up to {{ upload_limit }}";
+}
+drop.addEventListener("click", e => { if (!e.target.closest("button, a")) fileInput.click(); });
+drop.addEventListener("keydown", e => {
+  if (e.target === drop && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); fileInput.click(); }
+});
 fileInput.addEventListener("change", () => showPicked());
 ["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
-drop.addEventListener("drop", e => { if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; showPicked(); } });
+// A file dropped anywhere on the page is used too (instead of the browser opening it and leaving the page).
+window.addEventListener("dragover", e => { if (e.dataTransfer && [...e.dataTransfer.types].includes("Files")) e.preventDefault(); });
+window.addEventListener("drop", e => {
+  if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+  e.preventDefault();
+  if (mode !== "upload") setMode("upload");
+  fileInput.files = e.dataTransfer.files;
+  showPicked();
+});
 function showPicked() {
   const f = fileInput.files[0];
-  document.getElementById("picked").textContent = f ? `${f.name} (${(f.size / 1048576).toFixed(1)} MB)` : "";
+  const picked = document.getElementById("picked"), go = document.getElementById("go");
+  drop.classList.remove("attention");
+  drop.classList.toggle("ready", !!f);
+  if (!f) { picked.innerHTML = ""; go.textContent = "Find clips"; return; }
+  // Choosing a file doesn't upload it yet (the settings below apply to it), so say so and offer the button here.
+  picked.innerHTML = `<div><b>${esc(f.name)}</b> <span class="muted">(${fmtBytes(f.size)})</span></div>
+    <div class="row" style="justify-content:center;margin-top:12px">
+      <button type="submit" class="primary">Upload &amp; find clips</button>
+      <button type="button" class="js-change">Choose another file</button></div>
+    <div class="small muted" style="margin-top:8px">Or adjust the clip settings below first.</div>`;
+  picked.querySelector(".js-change").addEventListener("click", () => fileInput.click());
+  go.textContent = "Upload & find clips";
 }
 
 (async () => {
@@ -163,7 +200,8 @@ function options() {
 
 // ---- uploads: sent in small pieces so a slow or dropped connection never loses the whole upload ----
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const fmtBytes = b => b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GB" : (b / 1048576).toFixed(0) + " MB";
+const fmtBytes = b => b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GB"
+  : b >= 1048576 ? (b / 1048576).toFixed(0) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
 async function jsonReq(method, url, body) {
   let r;
   try {
@@ -247,6 +285,7 @@ document.getElementById("newjob").addEventListener("submit", async e => {
   const label = go.textContent;
   const finish = () => {
     submitting = false; uploadingNow = false; go.disabled = false; go.textContent = label;
+    document.querySelectorAll("#picked button").forEach(b => { b.disabled = false; });
     bar.classList.add("hidden"); txt.textContent = "";
   };
   const fd = new FormData();
@@ -265,6 +304,8 @@ document.getElementById("newjob").addEventListener("submit", async e => {
   }
   fd.append("options", JSON.stringify(options()));
   submitting = true; go.disabled = true; go.textContent = f ? "Uploading…" : "Starting…";
+  document.querySelectorAll("#picked button").forEach(b => { b.disabled = true; });
+  go.scrollIntoView({ block: "center", behavior: "smooth" });
   bar.classList.toggle("hidden", !f); bar.firstElementChild.style.width = "0%";
   let uploaded = null;
   try {
