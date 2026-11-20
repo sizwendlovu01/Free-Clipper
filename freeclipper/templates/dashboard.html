@@ -226,15 +226,16 @@ function putPiece(url, blob, onProgress) {
 const storeGet = k => { try { return localStorage.getItem(k); } catch (_) { return null; } };
 const storeSet = (k, v) => { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (_) {} };
 
-// Uploads the file and returns its upload id. Picking the same file again after a failure or a page
-// reload continues from the last piece the server has.
+// Uploads the file and returns its upload id. Several pieces travel at once (the server stores them in any
+// order), so the connection never sits idle waiting for a reply. Picking the same file again after a
+// failure or a page reload sends only the pieces the server doesn't have yet.
 async function uploadFile(f, show) {
   const key = `fc-upload:${f.name}:${f.size}:${f.lastModified}`;
   let up = null;
   const saved = storeGet(key);
   if (saved) {
     const r = await jsonReq("GET", `/api/uploads/${saved}`);
-    if (r.status === 200 && r.data.size === f.size) up = r.data;
+    if (r.status === 200 && r.data.size === f.size && Array.isArray(r.data.pieces)) up = r.data;
   }
   if (!up) {
     const r = await jsonReq("POST", "/api/uploads", { filename: f.name || "video.mp4", size: f.size, content_type: f.type });
@@ -245,31 +246,63 @@ async function uploadFile(f, show) {
   } else if (up.received > 0) {
     toast(`Resuming your upload from ${(up.received / f.size * 100).toFixed(0)}%`);
   }
-  let offset = up.received, fails = 0;
-  show(offset);
-  while (offset < f.size) {
-    const end = Math.min(f.size, offset + up.chunk_size);
-    const r = await putPiece(`/api/uploads/${up.id}?offset=${offset}`, f.slice(offset, end), n => show(offset + n));
-    if (r.status === 200) { offset = r.data.received; fails = 0; show(offset); continue; }
-    if (r.status === 409 && typeof r.data.received === "number") { offset = r.data.received; continue; }
-    if (r.status === 401) { location.href = "/login"; throw new Error("Sign in required."); }
-    if (r.status === 404) { storeSet(key, null); throw new Error(r.data.detail || "The upload expired. Please start it again."); }
-    if (r.status && r.status < 500 && r.status !== 408 && r.status !== 429)
-      throw new Error(r.data.detail || "Upload failed. Please try again.");
-    // Connection dropped or the server was busy: wait, then continue from what the server has.
-    fails++;
-    if (fails > 12) throw new Error("The connection kept dropping. Choose the same file again to continue where it stopped.");
-    for (let s = Math.min(30, 2 ** fails); s > 0; s--) {
-      show(offset, `Connection problem, retrying in ${s}s… (${(offset / f.size * 100).toFixed(0)}% uploaded)`);
-      await sleep(1000);
+  const size = up.chunk_size, count = up.piece_count || Math.max(1, Math.ceil(f.size / size));
+  const done = new Set(up.pieces || []);
+  const pieceLen = i => (i === count - 1 ? f.size - size * (count - 1) : size);
+  let doneBytes = [...done].reduce((a, i) => a + pieceLen(i), 0);
+  const inFlight = new Map();  // piece -> bytes sent so far
+  let fatal = null, fails = 0, note = "";
+  const report = () => show(Math.min(f.size, doneBytes + [...inFlight.values()].reduce((a, b) => a + b, 0)), note);
+  const todo = [];
+  for (let i = 0; i < count; i++) if (!done.has(i)) todo.push(i);
+  report();
+
+  async function sendPiece(i) {
+    for (;;) {
+      if (fatal) return;
+      inFlight.set(i, 0);
+      const from = i * size;
+      const r = await putPiece(`/api/uploads/${up.id}?offset=${from}`, f.slice(from, from + pieceLen(i)),
+        n => { inFlight.set(i, n); report(); });
+      inFlight.delete(i);
+      if (r.status === 200) {
+        if (!done.has(i)) { done.add(i); doneBytes += pieceLen(i); }
+        fails = 0; note = ""; report();
+        return;
+      }
+      if (r.status === 401) { fatal = new Error("Sign in required."); location.href = "/login"; return; }
+      if (r.status === 404) { storeSet(key, null); fatal = new Error(r.data.detail || "The upload expired. Please start it again."); return; }
+      if (r.status && r.status < 500 && ![408, 409, 429, 499].includes(r.status)) {
+        fatal = new Error(r.data.detail || "Upload failed. Please try again.");
+        return;
+      }
+      // Connection dropped or the server was busy: wait, then send this piece again.
+      fails++;
+      if (fails > 12 * (up.parallel || 1)) {
+        fatal = new Error("The connection kept dropping. Choose the same file again to continue where it stopped.");
+        return;
+      }
+      const wait = Math.min(30, 2 ** Math.min(5, Math.ceil(fails / (up.parallel || 1))));
+      note = `Connection problem, retrying in ${wait}s… (${(doneBytes / f.size * 100).toFixed(0)}% uploaded)`;
+      report();
+      await sleep(wait * 1000);
+      if (!navigator.onLine) {
+        note = "You're offline. The upload will continue when the connection is back…";
+        report();
+        await new Promise(res => window.addEventListener("online", res, { once: true }));
+      }
     }
-    if (!navigator.onLine) {
-      show(offset, "You're offline. The upload will continue when the connection is back…");
-      await new Promise(res => window.addEventListener("online", res, { once: true }));
-    }
-    const st = await jsonReq("GET", `/api/uploads/${up.id}`);
-    if (st.status === 200) offset = st.data.received;
   }
+
+  async function lane() {
+    while (!fatal && todo.length) await sendPiece(todo.shift());
+  }
+  await Promise.all(Array.from({ length: Math.min(up.parallel || 1, Math.max(1, todo.length)) }, lane));
+  if (fatal) throw fatal;
+  // Double-check with the server before using the upload.
+  const st = await jsonReq("GET", `/api/uploads/${up.id}`);
+  if (st.status === 200 && st.data.received !== f.size)
+    throw new Error("Part of the upload is missing. Choose the same file again to finish it.");
   return { id: up.id, key };
 }
 

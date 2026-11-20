@@ -93,6 +93,8 @@ function render() {
     ${job.clips_done ? `<a class="btn primary" href="/api/jobs/${JOB}/export.zip">Download all (.zip)</a>` : ""}
     ${["failed", "cancelled"].includes(job.status) ? '<button onclick="retry(this)">Retry</button>' : ""}
     ${job.clip_count && !["queued", "running"].includes(job.status) ? '<button onclick="retitle(this)">Rewrite titles</button>' : ""}
+    ${!busy && job.source_available && job.clips.some(c => c.status === "failed")
+      ? `<button class="primary" onclick="retryFailed(this)">Re-render ${job.clips.filter(c => c.status === "failed").length} failed clip(s)</button>` : ""}
     <button class="danger" onclick="delJob(this)">Delete project</button>`;
   let status = "";
   if (busy) status = `<div class="small" style="margin-bottom:6px">${esc(job.stage)} · ${(job.progress * 100).toFixed(0)}%</div>
@@ -227,6 +229,12 @@ function retitle(btn) {
     const r = await api(`/api/jobs/${JOB}/retitle`, { method: "POST" });
     toast(`Rewrote ${r.updated} title${r.updated === 1 ? "" : "s"}`); load();
   }, "Rewriting…");
+}
+function retryFailed(btn) {
+  withBusy(btn, async () => {
+    const r = await api(`/api/jobs/${JOB}/retry-failed`, { method: "POST" });
+    toast(`Re-rendering ${r.queued} clip${r.queued === 1 ? "" : "s"}`); load();
+  }, "Queuing…");
 }
 function retry(btn) {
   withBusy(btn, async () => { await api(`/api/jobs/${JOB}/reanalyze`, { method: "POST", body: {} }); toast("Queued again"); load(); }, "Queuing…");

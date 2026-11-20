@@ -265,6 +265,9 @@ MAX_SOCIAL_ACCOUNTS = max(1, _int("MAX_SOCIAL_ACCOUNTS", default=20))
 UPLOAD_EXPIRY_HOURS = max(1, _int("UPLOAD_EXPIRY_HOURS", default=24))
 UPLOAD_CHUNK_MB = min(64, max(1, _int("UPLOAD_CHUNK_MB", default=8)))  # size of each upload piece
 MAX_OPEN_UPLOADS = max(1, _int("MAX_OPEN_UPLOADS", default=3))  # unfinished uploads per user
+# Pieces of one upload sent at the same time. Several in flight keep the connection busy instead of
+# pausing after every piece for the server's reply (a big win on long-distance links).
+UPLOAD_PARALLEL = min(8, max(1, _int("UPLOAD_PARALLEL", default=4)))
 
 # YouTube sometimes asks cloud servers to "confirm you're not a bot". Two standard yt-dlp workarounds:
 # a cookies.txt exported from a signed-in browser (uploaded by an admin in Settings, or a path), and a proxy.
@@ -274,6 +277,8 @@ YTDLP_PROXY = _env("YTDLP_PROXY", default="") or ""
 FFMPEG = _env("FC_FFMPEG", default="ffmpeg")
 FFPROBE = _env("FC_FFPROBE", default="ffprobe")
 X264_PRESET = _env("FC_X264_PRESET", default="veryfast")
+# Clips are rendered at no more than this frame rate (TikTok, Shorts and Reels play 30). 0 keeps the source's.
+MAX_OUTPUT_FPS = max(0, _int("MAX_OUTPUT_FPS", default=30))
 X264_CRF = _int("FC_X264_CRF", default=20)
 
 # ---------------- transcription (faster-whisper, runs locally) ----------------

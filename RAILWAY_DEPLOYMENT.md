@@ -155,7 +155,8 @@ All optional except where noted. Names in brackets are older aliases that still 
 | `MAX_CONCURRENT_JOBS` | 1 | Videos processed at once. |
 | `MAX_WORKERS` (FC_RENDER_WORKERS) | 1 | Clips rendered in parallel per video (one ffmpeg each). |
 | `FFMPEG_THREADS` | 0 (auto) | Threads per ffmpeg process. |
-| `MAX_UPLOAD_SIZE_MB` (FC_MAX_UPLOAD_MB) | 4096 | Upload limit (rejected before the upload starts). The dashboard sends files in small pieces (`UPLOAD_CHUNK_MB`, default 8), so Railway's per-request time limit never applies to a whole upload, and a dropped connection resumes where it stopped. |
+| `MAX_UPLOAD_SIZE_MB` (FC_MAX_UPLOAD_MB) | 4096 | Upload limit (rejected before the upload starts). The dashboard sends files in small pieces (`UPLOAD_CHUNK_MB`, default 8), so Railway's per-request time limit never applies to a whole upload, and a dropped connection resumes where it stopped. `UPLOAD_PARALLEL` (default 4) pieces travel at once, which keeps long-distance connections busy. |
+| `MAX_OUTPUT_FPS` | 30 | Clips are rendered at no more than this frame rate (TikTok, Shorts and Reels play 30). A 60 fps stream renders about twice as fast as at 60. `0` keeps the source's frame rate. |
 | `ALERT_WEBHOOK_URL` | (empty) | A Discord or Slack incoming-webhook URL. Failed projects, server errors and low storage are posted there as they happen (Admin page lists them either way). Use **Admin > Send test alert** to check it. |
 | `ALERT_COOLDOWN_MINUTES` | 30 | The same kind of problem alerts at most this often; the next alert says how many were held back. |
 | `UPLOAD_EXPIRY_HOURS` | 24 | An unfinished upload with no progress for this long is deleted. |

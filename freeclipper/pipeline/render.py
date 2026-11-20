@@ -263,16 +263,40 @@ def crop_expression(samples: list[tuple], src_w: int, crop_w: int) -> str | None
     points[0] = (0.0, points[0][1])
     if all(abs(x - points[0][1]) < 0.5 for _, x in points):
         return f"{points[0][1]:.1f}"
-    expr = f"{points[-1][1]:.1f}"
-    for (t0, x0), (t1, x1) in reversed(list(zip(points, points[1:]))):
-        if t1 <= t0:
+    # The path is the starting position plus one term per move: 0 before the move, a straight ramp during
+    # it, the full change after. Terms are added as a balanced tree: ffmpeg refuses expressions nested
+    # about 100 deep, which a chain of if()s (or of +s) reaches on long, busy clips.
+    # Positions in whole tenths of a pixel, so the changes add up exactly (no rounding drift).
+    tenths = [round(x * 10) for _, x in points]
+    terms = [f"{tenths[0] / 10:.1f}"]
+    for i, ((t0, _), (t1, _)) in enumerate(zip(points, points[1:])):
+        d = (tenths[i + 1] - tenths[i]) / 10
+        if t1 <= t0 or not d:
+            if t1 <= t0:
+                tenths[i + 1] = tenths[i]  # a zero-length step can't move: keep the sum in step
             continue
-        seg = f"{x0:.1f}" if abs(x1 - x0) < 0.5 else f"{x0:.1f}+({x1 - x0:.1f})*(t-{t0:.3f})/{t1 - t0:.3f}"
-        expr = f"if(lt(t\\,{t1:.3f})\\,{seg}\\,{expr})"
-    return expr
+        terms.append(f"if(lt(t\\,{t0:.3f})\\,0\\,if(lt(t\\,{t1:.3f})\\,{d:.1f}*(t-{t0:.3f})/{t1 - t0:.3f}\\,{d:.1f}))")
+    return _balanced_sum(terms)
+
+
+def _balanced_sum(terms: list[str]) -> str:
+    """a+b+c+... grouped as ((a+b)+(c+d))+... so the expression is only log2(n) levels deep."""
+    while len(terms) > 1:
+        terms = [f"({terms[i]}+{terms[i + 1]})" if i + 1 < len(terms) else terms[i]
+                 for i in range(0, len(terms), 2)]
+    return terms[0]
 
 
 # ---------------- filter graph ----------------
+
+def _source_in(info: dict) -> str:
+    """The video input, slowed to MAX_OUTPUT_FPS first when the source is faster (a 60 fps stream renders
+    at 30 fps: half the frames to filter and encode; TikTok, Shorts and Reels play 30 fps anyway)."""
+    cap = config.MAX_OUTPUT_FPS
+    if cap and float(info.get("fps") or 0) > cap + 0.5:
+        return f"[0:v]fps={cap},"
+    return "[0:v]"
+
 
 def _video_chain(src: Path, info: dict, start: float, end: float, out_w: int, out_h: int,
                  mode: str, accent: str) -> str:
@@ -298,17 +322,17 @@ def _video_chain(src: Path, info: dict, start: float, end: float, out_w: int, ou
             tracked = _face_track(src, start, end, info["fps"], w, crop_w, h)
             if tracked:
                 x_expr = tracked
-        return (f"[0:v]crop={crop_w}:{crop_h}:{x_expr}:{y_expr},"
+        return (f"{_source_in(info)}crop={crop_w}:{crop_h}:{x_expr}:{y_expr},"
                 f"scale={out_w}:{out_h}:flags=lanczos,setsar=1[v0]")
     if mode == "fit_blur":
-        return (f"[0:v]split[a][b];"
+        return (f"{_source_in(info)}split[a][b];"
                 # Blur at quarter size, then upscale: same look, a fraction of the CPU.
                 f"[a]scale={_even(out_w / 4)}:{_even(out_h / 4)}:force_original_aspect_ratio=increase,"
                 f"crop={_even(out_w / 4)}:{_even(out_h / 4)},boxblur=8:2,eq=brightness=-0.08,"
                 f"scale={out_w}:{out_h}:flags=bilinear[bg];"
                 f"[b]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:flags=lanczos[fg];"
                 f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v0]")
-    return (f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:flags=lanczos,"
+    return (f"{_source_in(info)}scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:flags=lanczos,"
             f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[v0]")
 
 
@@ -335,9 +359,15 @@ def _find_webcam(src: Path, start: float, end: float, src_w: int, src_h: int) ->
     h = _even(src_h * w / src_w)
     duration = end - start
     fps = max(0.5, min(1.0, 30 / max(1.0, duration)))
+    # Long clips: decode keyframes only (streams have one every ~2 s) instead of every frame, and take at
+    # most `fps` of them per second. Many times faster; short clips keep every frame so enough are seen.
+    keyframes = ["-skip_frame", "nokey"] if duration >= 40 else []
+    pick = (f"select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,{1 / fps:.3f})'"
+            if keyframes else f"fps={fps:.3f}")
     cmd = [config.FFMPEG, "-v", "error", *media.thread_args(), "-skip_loop_filter", "all", "-flags2", "+fast",
-           "-ss", f"{start:.3f}", "-i", str(src), "-t", f"{duration:.3f}", "-an", "-sn",
-           "-vf", f"fps={fps:.3f},scale={w}:{h}:flags=area", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
+           *keyframes, "-ss", f"{start:.3f}", "-i", str(src), "-t", f"{duration:.3f}", "-an", "-sn",
+           "-vf", f"{pick},scale={w}:{h}:flags=area", "-fps_mode", "vfr",
+           "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
     detector = _FaceDetector()
     groups: list[dict] = []  # faces grouped by where they sit in the frame
     frames = 0
@@ -485,7 +515,7 @@ def _streamer_chain(src: Path, info: dict, start: float, end: float, out_w: int,
     fx, fy = (out_w - fit_w) // 2, (out_h - fit_h) // 2
     box_y = 0 if cam_top else out_h - box_h
     small_w, small_h = _even(out_w / 4), _even(out_h / 4)
-    graph = (f"[0:v]split=3[b][g][c];"
+    graph = (f"{_source_in(info)}split=3[b][g][c];"
              f"[b]crop={g_w}:{g_h}:{gx:.1f}:{gy:.1f},scale={small_w}:{small_h}:force_original_aspect_ratio=increase,"
              f"crop={small_w}:{small_h},boxblur=10:2,eq=brightness=-0.12,scale={out_w}:{out_h}:flags=bilinear[bg];"
              f"[g]crop={g_w}:{g_h}:{gx:.1f}:{gy:.1f},scale={fit_w}:{fit_h}:flags=lanczos,setsar=1[game];"

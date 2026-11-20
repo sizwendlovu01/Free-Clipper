@@ -4,10 +4,12 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import os
 import re
 import secrets
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -975,8 +977,8 @@ async def api_job_create(request: Request, file: UploadFile | None = File(None),
     if upload_id:
         up = own_upload(upload_id, user)
         part = upload_path(up)
-        size = part.stat().st_size if part.exists() else 0
-        if size != up["size"]:
+        size = received_bytes(up) if part.exists() else 0
+        if size != up["size"] or part.stat().st_size != up["size"]:
             raise HTTPException(409, f"The upload isn't finished yet ({size} of {up['size']} bytes).")
         jdir.mkdir(parents=True, exist_ok=True)
         dest = jdir / f"source{up['ext']}"
@@ -1075,6 +1077,46 @@ def upload_path(up: dict) -> Path:
     return config.UPLOADS_DIR / up["id"] / "data"
 
 
+def chunk_size() -> int:
+    return config.UPLOAD_CHUNK_MB * 1024 * 1024
+
+
+def upload_chunks(up: dict) -> tuple[int, int]:
+    """(number of pieces, size of a full piece). The last piece holds the remainder."""
+    size = chunk_size()
+    return max(1, -(-up["size"] // size)), size
+
+
+def piece_length(up: dict, index: int) -> int:
+    count, size = upload_chunks(up)
+    return up["size"] - size * (count - 1) if index == count - 1 else size
+
+
+def done_pieces(up: dict) -> set[int]:
+    """Pieces already stored. Pieces can arrive in any order (several are sent at once); each finished one
+    is listed in the `pieces` file. Uploads started before that existed were strictly in order, so their
+    data file's length says which pieces they have."""
+    marks = config.UPLOADS_DIR / up["id"] / "pieces"
+    if marks.exists():
+        try:
+            return {int(x) for x in marks.read_text(encoding="utf-8").split()}
+        except ValueError:
+            return set()
+    part = upload_path(up)
+    have = part.stat().st_size if part.exists() else 0
+    count, size = upload_chunks(up)
+    full = have // size
+    pieces = set(range(min(full, count)))
+    if have == up["size"]:
+        pieces = set(range(count))
+    return pieces
+
+
+def received_bytes(up: dict, pieces: set[int] | None = None) -> int:
+    pieces = done_pieces(up) if pieces is None else pieces
+    return sum(piece_length(up, i) for i in pieces)
+
+
 def remove_upload(upload_id: str) -> None:
     db.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
     shutil.rmtree(config.UPLOADS_DIR / upload_id, ignore_errors=True)
@@ -1082,10 +1124,10 @@ def remove_upload(upload_id: str) -> None:
 
 
 def upload_json(up: dict) -> dict:
-    part = upload_path(up)
-    received = part.stat().st_size if part.exists() else 0
-    return {"id": up["id"], "filename": up["filename"], "size": up["size"], "received": received,
-            "chunk_size": config.UPLOAD_CHUNK_MB * 1024 * 1024}
+    pieces = done_pieces(up)
+    return {"id": up["id"], "filename": up["filename"], "size": up["size"], "received": received_bytes(up, pieces),
+            "chunk_size": chunk_size(), "pieces": sorted(pieces), "piece_count": upload_chunks(up)[0],
+            "parallel": config.UPLOAD_PARALLEL}
 
 
 @app.post("/api/uploads")
@@ -1117,6 +1159,7 @@ async def api_upload_start(request: Request, user: dict = Depends(require_user))
     upload_id = uuid.uuid4().hex
     (config.UPLOADS_DIR / upload_id).mkdir(parents=True, exist_ok=True)
     (config.UPLOADS_DIR / upload_id / "data").touch()
+    (config.UPLOADS_DIR / upload_id / "pieces").touch()
     db.execute("INSERT INTO uploads(id, user_id, filename, ext, size, received, created_at, updated_at) "
                "VALUES(?, ?, ?, ?, ?, 0, ?, ?)", (upload_id, user["id"], filename, ext, size, db.now(), db.now()))
     return upload_json(db.one("SELECT * FROM uploads WHERE id = ?", (upload_id,)))
@@ -1129,47 +1172,59 @@ def api_upload_status(upload_id: str, user: dict = Depends(require_user)):
 
 @app.put("/api/uploads/{upload_id}")
 async def api_upload_chunk(upload_id: str, request: Request, offset: int, user: dict = Depends(require_user)):
-    """Append one piece at `offset`. The server's byte count is the truth: a piece for the wrong offset
-    gets 409 with the current count, and a piece cut off mid-way is discarded, so retries are safe."""
-    import asyncio
+    """Store one piece. `offset` must be the start of a piece (a multiple of chunk_size) and the body
+    exactly that piece's length. Pieces may come in any order and several at once; sending a piece again
+    is harmless, and a piece cut off mid-way is discarded, so retries are always safe."""
 
     up = own_upload(upload_id, user)
-    lock = _upload_locks.setdefault(upload_id, asyncio.Lock())
-    async with lock:
-        part = upload_path(up)
-        if not part.exists():
-            raise HTTPException(404, "Upload not found. It may have expired; please start it again.")
-        have = part.stat().st_size
-        if offset != have:
-            return JSONResponse({"detail": "Offset mismatch.", "received": have}, status_code=409)
-        limit = min(config.UPLOAD_CHUNK_MB * 1024 * 1024 * 2, up["size"] - have)
-        buf = bytearray()
-        try:
-            async for piece in request.stream():
-                buf += piece
-                if len(buf) > limit:
-                    raise HTTPException(413, "Upload piece is too large.")
-        except ClientDisconnect:  # connection dropped mid-piece: keep nothing; the browser resends it
-            return Response(status_code=499)
-        if not buf:
-            raise HTTPException(400, "Empty upload piece.")
+    count, size = upload_chunks(up)
+    if offset < 0 or offset % size or offset // size >= count:
+        return JSONResponse({"detail": "Offset isn't the start of a piece.", "received": received_bytes(up)},
+                            status_code=409)
+    index = offset // size
+    want = piece_length(up, index)
+    buf = bytearray()
+    try:  # received before taking the lock, so several pieces can arrive at once
+        async for chunk in request.stream():
+            buf += chunk
+            if len(buf) > want:
+                raise HTTPException(413, "Upload piece is too large.")
+    except ClientDisconnect:  # connection dropped mid-piece: keep nothing; the browser resends it
+        return Response(status_code=499)
+    if len(buf) != want:
+        raise HTTPException(400, f"Upload piece is incomplete ({len(buf)} of {want} bytes).")
+    lock = _upload_locks.setdefault(upload_id, threading.Lock())
 
-        def append() -> int:
-            try:
-                with part.open("ab") as f:
-                    f.write(buf)
-            except OSError:
-                with part.open("ab") as f:  # never keep a half-written piece
-                    f.truncate(have)
-                raise
-            return part.stat().st_size
+    def store() -> int:
+        """Write the piece and count it, one piece at a time per upload (a thread lock: safe whichever
+        thread or event loop the request runs on)."""
+        with lock:
+            part = upload_path(up)
+            if not part.exists() or not db.one("SELECT id FROM uploads WHERE id = ?", (upload_id,)):
+                raise HTTPException(404, "Upload not found. It may have expired; please start it again.")
+            pieces = done_pieces(up)
+            marks = config.UPLOADS_DIR / upload_id / "pieces"
+            if not marks.exists():  # started before pieces were listed: record what it already has
+                marks.write_text("".join(f"{i}\n" for i in sorted(pieces)), encoding="utf-8")
+            if index not in pieces:
+                try:
+                    with part.open("r+b") as f:
+                        f.seek(offset)
+                        f.write(buf)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    # Only after the bytes are safely stored is the piece counted as done.
+                    with (config.UPLOADS_DIR / upload_id / "pieces").open("a", encoding="utf-8") as f:
+                        f.write(f"{index}\n")
+                except OSError as e:
+                    raise HTTPException(507, "The server ran out of storage during the upload.") from e
+                pieces.add(index)
+            received = received_bytes(up, pieces)
+            db.execute("UPDATE uploads SET received = ?, updated_at = ? WHERE id = ?",
+                       (received, db.now(), upload_id))
+            return received
 
-        try:
-            received = await run_in_threadpool(append)
-        except OSError as e:
-            raise HTTPException(507, "The server ran out of storage during the upload.") from e
-        db.execute("UPDATE uploads SET received = ?, updated_at = ? WHERE id = ?",
-                   (received, db.now(), upload_id))
+    received = await run_in_threadpool(store)
     return {"received": received, "size": up["size"], "complete": received == up["size"]}
 
 
@@ -1224,6 +1279,24 @@ def api_job_retitle(job_id: str, user: dict = Depends(require_user)):
             pass
         updated += 1
     return {"updated": updated}
+
+
+@app.post("/api/jobs/{job_id}/retry-failed")
+def api_job_retry_failed(job_id: str, user: dict = Depends(require_user)):
+    """Render every failed clip of a finished project again (same moments, same settings)."""
+    job = own_job(job_id, user)
+    if job["status"] in ("queued", "running"):
+        raise HTTPException(409, "This project is still being processed.")
+    if not source_available(job_id):
+        raise HTTPException(409, "The source video is no longer stored, so clips can't be re-rendered.")
+    failed = db.query("SELECT id FROM clips WHERE job_id = ? AND status = 'failed'", (job_id,))
+    for _ in failed:
+        check_render_rate(user)
+    queued = db.execute("UPDATE clips SET status = 'queued', error = NULL, updated_at = ? "
+                        "WHERE job_id = ? AND status = 'failed'", (db.now(), job_id))
+    if queued:
+        runner.notify()
+    return {"queued": queued}
 
 
 @app.post("/api/jobs/{job_id}/reanalyze")
